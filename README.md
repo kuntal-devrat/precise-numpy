@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="assets/logo.svg" alt="precise-numpy logo" width="180" height="180" />
+  <img src="assets/logo.png" alt="precise-numpy logo" width="380" />
 
   # precise-numpy
 
