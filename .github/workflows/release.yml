@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
 jobs:
   linux:
     name: Build Linux Wheels (${{ matrix.target }})
@@ -22,7 +25,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist -i 3.10 -i 3.11 -i 3.12 -i 3.13
           manylinux: auto
       - name: Upload Wheels
         uses: actions/upload-artifact@v4
@@ -41,7 +44,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist -i 3.10 -i 3.11 -i 3.12 -i 3.13
       - name: Upload Wheels
         uses: actions/upload-artifact@v4
         with:
@@ -60,7 +63,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist -i 3.10 -i 3.11 -i 3.12 -i 3.13
       - name: Upload Wheels
         uses: actions/upload-artifact@v4
         with:

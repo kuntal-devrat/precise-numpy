@@ -11,7 +11,7 @@ name = "precise_numpy"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "num-bigint"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310", "num-bigint"] }
 rayon = "1.10"
 libc = "0.2"
 matrixmultiply = "0.3"
