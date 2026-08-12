@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use crate::array::IntervalArray;
 use crate::error::Interval;
 use crate::simd::vec_ops;
@@ -162,12 +163,11 @@ pub fn prod(a: &IntervalArray) -> Interval {
     result
 }
 
-/// High-performance matrix multiplication using BLAS-grade assembly microkernels (`matrixmultiply`).
+/// Multi-threaded Parallel GEMM matrix multiplication (`matrixmultiply`).
 ///
 /// a: [M, K], b: [K, N] -> result: [M, N]
 ///
-/// Computes C_mid = A_mid * B_mid via assembly GEMM microkernels with cache-blocking,
-/// and C_rad via decomposed GEMM operations.
+/// Uses parallel row-block decomposition over Rayon threads + assembly GEMM microkernels.
 pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.ndim(), 2, "matmul requires 2D arrays");
     assert_eq!(b.ndim(), 2, "matmul requires 2D arrays");
@@ -189,49 +189,76 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let mut r_mids = vec![0.0f64; m * n];
     let mut r_rads = vec![0.0f64; m * n];
 
-    // Compute C_mid = A_mid * B_mid using matrixmultiply dgemm
-    unsafe {
-        matrixmultiply::dgemm(
-            m, k, n,
-            1.0,
-            a_mids.as_ptr(), k as isize, 1,
-            b_mids.as_ptr(), n as isize, 1,
-            0.0,
-            r_mids.as_mut_ptr(), n as isize, 1,
-        );
-    }
+    let a_is_exact = a.is_exact();
+    let b_is_exact = b.is_exact();
 
-    // For C_rad = |A_mid| * B_rad + A_rad * |B_mid| + A_rad * B_rad:
-    // Compute |A_mid| and |B_mid|
-    let abs_a_mids: Vec<f64> = a_mids.iter().map(|&x| x.abs()).collect();
-    let abs_b_mids: Vec<f64> = b_mids.iter().map(|&x| x.abs()).collect();
+    // Precompute absolute value matrices if needed for radii propagation
+    let abs_a_mids: Vec<f64> = if !b_is_exact {
+        a_mids.iter().map(|&x| x.abs()).collect()
+    } else {
+        vec![]
+    };
 
-    // |B_mid| + B_rad
-    let abs_b_plus_rad: Vec<f64> = abs_b_mids.iter().zip(b_rads.iter()).map(|(&bm, &br)| bm + br).collect();
+    let abs_b_plus_rad: Vec<f64> = if !a_is_exact {
+        b_mids.iter().zip(b_rads.iter()).map(|(&bm, &br)| bm.abs() + br).collect()
+    } else {
+        vec![]
+    };
 
-    // r_rad = |A_mid| * B_rad
-    unsafe {
-        matrixmultiply::dgemm(
-            m, k, n,
-            1.0,
-            abs_a_mids.as_ptr(), k as isize, 1,
-            b_rads.as_ptr(), n as isize, 1,
-            0.0,
-            r_rads.as_mut_ptr(), n as isize, 1,
-        );
-    }
+    // Parallel row-block decomposition over M dimension
+    let row_chunk_size = if m >= 64 { 32 } else { m };
 
-    // r_rad += A_rad * (|B_mid| + B_rad)
-    unsafe {
-        matrixmultiply::dgemm(
-            m, k, n,
-            1.0,
-            a_rads.as_ptr(), k as isize, 1,
-            abs_b_plus_rad.as_ptr(), n as isize, 1,
-            1.0, // beta = 1.0 accumulates into r_rad
-            r_rads.as_mut_ptr(), n as isize, 1,
-        );
-    }
+    r_mids.par_chunks_mut(row_chunk_size * n)
+        .zip(r_rads.par_chunks_mut(row_chunk_size * n))
+        .enumerate()
+        .for_each(|(chunk_idx, (m_chunk, r_chunk))| {
+            let row_start = chunk_idx * row_chunk_size;
+            let current_m = m_chunk.len() / n;
+
+            let a_mid_ptr = unsafe { a_mids.as_ptr().add(row_start * k) };
+            let a_rad_ptr = unsafe { a_rads.as_ptr().add(row_start * k) };
+
+            // 1. C_mid = A_mid * B_mid
+            unsafe {
+                matrixmultiply::dgemm(
+                    current_m, k, n,
+                    1.0,
+                    a_mid_ptr, k as isize, 1,
+                    b_mids.as_ptr(), n as isize, 1,
+                    0.0,
+                    m_chunk.as_mut_ptr(), n as isize, 1,
+                );
+            }
+
+            // 2. C_rad = |A_mid| * B_rad + A_rad * (|B_mid| + B_rad)
+            if !b_is_exact {
+                let abs_a_ptr = unsafe { abs_a_mids.as_ptr().add(row_start * k) };
+                unsafe {
+                    matrixmultiply::dgemm(
+                        current_m, k, n,
+                        1.0,
+                        abs_a_ptr, k as isize, 1,
+                        b_rads.as_ptr(), n as isize, 1,
+                        0.0,
+                        r_chunk.as_mut_ptr(), n as isize, 1,
+                    );
+                }
+            }
+
+            if !a_is_exact {
+                let beta = if !b_is_exact { 1.0 } else { 0.0 };
+                unsafe {
+                    matrixmultiply::dgemm(
+                        current_m, k, n,
+                        1.0,
+                        a_rad_ptr, k as isize, 1,
+                        abs_b_plus_rad.as_ptr(), n as isize, 1,
+                        beta,
+                        r_chunk.as_mut_ptr(), n as isize, 1,
+                    );
+                }
+            }
+        });
 
     IntervalArray::from_raw_parts(&r_mids, &r_rads, &[m, n])
 }
