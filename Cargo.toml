@@ -1,0 +1,27 @@
+[package]
+name = "precise-numpy"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance NumPy-compatible interval arrays with guaranteed numerical error bounds, powered by Rust SIMD"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "precise_numpy"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "num-bigint"] }
+rayon = "1.10"
+libc = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
