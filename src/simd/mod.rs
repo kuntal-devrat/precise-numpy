@@ -111,7 +111,85 @@ pub mod vec_ops {
         }
     }
 
-    // ── Super-Instruction: Fused Streaming Interval Multiplication ─────
+    // ── Super-Instruction: Single-Pass Fused Streaming Kernels ─────────
+
+    /// Single-pass streaming kernel for interval addition.
+    /// Computes midpoints AND radii in vector registers simultaneously.
+    #[inline]
+    pub fn add_intervals_stream(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                unsafe {
+                    return add_intervals_avx512(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+                }
+            } else if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    return add_intervals_avx2(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+                }
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                return add_intervals_neon(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+            }
+        }
+
+        for i in 0..n {
+            r_mids[i] = a_mids[i] + b_mids[i];
+            r_rads[i] = a_rads[i] + b_rads[i];
+        }
+    }
+
+    /// Single-pass streaming kernel for interval subtraction.
+    #[inline]
+    pub fn sub_intervals_stream(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                unsafe {
+                    return sub_intervals_avx512(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+                }
+            } else if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    return sub_intervals_avx2(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+                }
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                return sub_intervals_neon(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+            }
+        }
+
+        for i in 0..n {
+            r_mids[i] = a_mids[i] - b_mids[i];
+            r_rads[i] = a_rads[i] + b_rads[i];
+        }
+    }
+
     /// Single-pass streaming kernel for interval multiplication.
     /// Computes midpoints AND radii in vector registers simultaneously.
     /// ZERO temporary vector allocations.
@@ -157,6 +235,60 @@ pub mod vec_ops {
             let br = b_rads[i];
             r_mids[i] = am * bm;
             r_rads[i] = am.abs() * br + bm.abs() * ar + ar * br;
+        }
+    }
+
+    /// Single-pass streaming kernel for scalar interval multiplication.
+    #[inline]
+    pub fn mul_scalar_stream(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        s_mid: f64,
+        s_rad: f64,
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+        let abs_s_mid = s_mid.abs();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                unsafe {
+                    return mul_scalar_avx2_fma(a_mids, a_rads, s_mid, s_rad, abs_s_mid, r_mids, r_rads);
+                }
+            }
+        }
+
+        for i in 0..n {
+            r_mids[i] = a_mids[i] * s_mid;
+            r_rads[i] = a_mids[i].abs() * s_rad + a_rads[i] * abs_s_mid + a_rads[i] * s_rad;
+        }
+    }
+
+    /// Hardware SIMD vector square root.
+    #[inline]
+    pub fn sqrt_f64(a: &[f64], out: &mut [f64]) {
+        debug_assert_eq!(a.len(), out.len());
+        let n = a.len();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                unsafe { return sqrt_f64_avx512(a, out); }
+            }
+            if is_x86_feature_detected!("avx2") {
+                unsafe { return sqrt_f64_avx2(a, out); }
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe { return sqrt_f64_neon(a, out); }
+        }
+
+        for i in 0..n {
+            out[i] = a[i].sqrt();
         }
     }
 
@@ -364,6 +496,90 @@ pub mod vec_ops {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
+    unsafe fn add_intervals_avx512(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::x86_64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 8 <= n {
+            let va_mid = _mm512_loadu_pd(a_mids.as_ptr().add(i));
+            let va_rad = _mm512_loadu_pd(a_rads.as_ptr().add(i));
+            let vb_mid = _mm512_loadu_pd(b_mids.as_ptr().add(i));
+            let vb_rad = _mm512_loadu_pd(b_rads.as_ptr().add(i));
+
+            let vr_mid = _mm512_add_pd(va_mid, vb_mid);
+            let vr_rad = _mm512_add_pd(va_rad, vb_rad);
+
+            _mm512_storeu_pd(r_mids.as_mut_ptr().add(i), vr_mid);
+            _mm512_storeu_pd(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 8;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) + *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn sub_intervals_avx512(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::x86_64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 8 <= n {
+            let va_mid = _mm512_loadu_pd(a_mids.as_ptr().add(i));
+            let va_rad = _mm512_loadu_pd(a_rads.as_ptr().add(i));
+            let vb_mid = _mm512_loadu_pd(b_mids.as_ptr().add(i));
+            let vb_rad = _mm512_loadu_pd(b_rads.as_ptr().add(i));
+
+            let vr_mid = _mm512_sub_pd(va_mid, vb_mid);
+            let vr_rad = _mm512_add_pd(va_rad, vb_rad);
+
+            _mm512_storeu_pd(r_mids.as_mut_ptr().add(i), vr_mid);
+            _mm512_storeu_pd(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 8;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) - *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn sqrt_f64_avx512(a: &[f64], out: &mut [f64]) {
+        use std::arch::x86_64::*;
+        let n = a.len();
+        let mut i = 0;
+        while i + 8 <= n {
+            let va = _mm512_loadu_pd(a.as_ptr().add(i));
+            let vr = _mm512_sqrt_pd(va);
+            _mm512_storeu_pd(out.as_mut_ptr().add(i), vr);
+            i += 8;
+        }
+        while i < n {
+            *out.get_unchecked_mut(i) = a.get_unchecked(i).sqrt();
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
     unsafe fn add_f64_avx512(a: &[f64], b: &[f64], out: &mut [f64]) {
         use std::arch::x86_64::*;
         let n = a.len();
@@ -524,6 +740,135 @@ pub mod vec_ops {
             i += 1;
         }
         total
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_intervals_avx2(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::x86_64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 4 <= n {
+            let va_mid = _mm256_loadu_pd(a_mids.as_ptr().add(i));
+            let va_rad = _mm256_loadu_pd(a_rads.as_ptr().add(i));
+            let vb_mid = _mm256_loadu_pd(b_mids.as_ptr().add(i));
+            let vb_rad = _mm256_loadu_pd(b_rads.as_ptr().add(i));
+
+            let vr_mid = _mm256_add_pd(va_mid, vb_mid);
+            let vr_rad = _mm256_add_pd(va_rad, vb_rad);
+
+            _mm256_storeu_pd(r_mids.as_mut_ptr().add(i), vr_mid);
+            _mm256_storeu_pd(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 4;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) + *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn sub_intervals_avx2(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::x86_64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 4 <= n {
+            let va_mid = _mm256_loadu_pd(a_mids.as_ptr().add(i));
+            let va_rad = _mm256_loadu_pd(a_rads.as_ptr().add(i));
+            let vb_mid = _mm256_loadu_pd(b_mids.as_ptr().add(i));
+            let vb_rad = _mm256_loadu_pd(b_rads.as_ptr().add(i));
+
+            let vr_mid = _mm256_sub_pd(va_mid, vb_mid);
+            let vr_rad = _mm256_add_pd(va_rad, vb_rad);
+
+            _mm256_storeu_pd(r_mids.as_mut_ptr().add(i), vr_mid);
+            _mm256_storeu_pd(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 4;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) - *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2", enable = "fma")]
+    unsafe fn mul_scalar_avx2_fma(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        s_mid: f64,
+        s_rad: f64,
+        abs_s_mid: f64,
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::x86_64::*;
+        let n = a_mids.len();
+        let abs_mask = _mm256_castsi256_pd(_mm256_set1_epi64x(0x7FFF_FFFF_FFFF_FFFF));
+
+        let vs_mid = _mm256_set1_pd(s_mid);
+        let vs_rad = _mm256_set1_pd(s_rad);
+        let vabs_s_mid = _mm256_set1_pd(abs_s_mid);
+
+        let mut i = 0;
+        while i + 4 <= n {
+            let va_mid = _mm256_loadu_pd(a_mids.as_ptr().add(i));
+            let va_rad = _mm256_loadu_pd(a_rads.as_ptr().add(i));
+
+            let vr_mid = _mm256_mul_pd(va_mid, vs_mid);
+
+            let vabs_a = _mm256_and_pd(va_mid, abs_mask);
+            let vt1 = _mm256_mul_pd(vabs_a, vs_rad);
+            let vt2 = _mm256_fmadd_pd(va_rad, vabs_s_mid, vt1);
+            let vr_rad = _mm256_fmadd_pd(va_rad, vs_rad, vt2);
+
+            _mm256_storeu_pd(r_mids.as_mut_ptr().add(i), vr_mid);
+            _mm256_storeu_pd(r_rads.as_mut_ptr().add(i), vr_rad);
+
+            i += 4;
+        }
+        while i < n {
+            let am = *a_mids.get_unchecked(i);
+            let ar = *a_rads.get_unchecked(i);
+            *r_mids.get_unchecked_mut(i) = am * s_mid;
+            *r_rads.get_unchecked_mut(i) = am.abs() * s_rad + ar * abs_s_mid + ar * s_rad;
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn sqrt_f64_avx2(a: &[f64], out: &mut [f64]) {
+        use std::arch::x86_64::*;
+        let n = a.len();
+        let mut i = 0;
+        while i + 4 <= n {
+            let va = _mm256_loadu_pd(a.as_ptr().add(i));
+            let vr = _mm256_sqrt_pd(va);
+            _mm256_storeu_pd(out.as_mut_ptr().add(i), vr);
+            i += 4;
+        }
+        while i < n {
+            *out.get_unchecked_mut(i) = a.get_unchecked(i).sqrt();
+            i += 1;
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1011,6 +1356,87 @@ pub mod vec_ops {
         }
         while i < n {
             *out.get_unchecked_mut(i) = *a.get_unchecked(i) * *b.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn add_intervals_neon(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::aarch64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 2 <= n {
+            let va_mid = vld1q_f64(a_mids.as_ptr().add(i));
+            let va_rad = vld1q_f64(a_rads.as_ptr().add(i));
+            let vb_mid = vld1q_f64(b_mids.as_ptr().add(i));
+            let vb_rad = vld1q_f64(b_rads.as_ptr().add(i));
+
+            let vr_mid = vaddq_f64(va_mid, vb_mid);
+            let vr_rad = vaddq_f64(va_rad, vb_rad);
+
+            vst1q_f64(r_mids.as_mut_ptr().add(i), vr_mid);
+            vst1q_f64(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 2;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) + *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn sub_intervals_neon(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        use std::arch::aarch64::*;
+        let n = a_mids.len();
+        let mut i = 0;
+        while i + 2 <= n {
+            let va_mid = vld1q_f64(a_mids.as_ptr().add(i));
+            let va_rad = vld1q_f64(a_rads.as_ptr().add(i));
+            let vb_mid = vld1q_f64(b_mids.as_ptr().add(i));
+            let vb_rad = vld1q_f64(b_rads.as_ptr().add(i));
+
+            let vr_mid = vsubq_f64(va_mid, vb_mid);
+            let vr_rad = vaddq_f64(va_rad, vb_rad);
+
+            vst1q_f64(r_mids.as_mut_ptr().add(i), vr_mid);
+            vst1q_f64(r_rads.as_mut_ptr().add(i), vr_rad);
+            i += 2;
+        }
+        while i < n {
+            *r_mids.get_unchecked_mut(i) = *a_mids.get_unchecked(i) - *b_mids.get_unchecked(i);
+            *r_rads.get_unchecked_mut(i) = *a_rads.get_unchecked(i) + *b_rads.get_unchecked(i);
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn sqrt_f64_neon(a: &[f64], out: &mut [f64]) {
+        use std::arch::aarch64::*;
+        let n = a.len();
+        let mut i = 0;
+        while i + 2 <= n {
+            let va = vld1q_f64(a.as_ptr().add(i));
+            let vr = vsqrtq_f64(va);
+            vst1q_f64(out.as_mut_ptr().add(i), vr);
+            i += 2;
+        }
+        while i < n {
+            *out.get_unchecked_mut(i) = a.get_unchecked(i).sqrt();
             i += 1;
         }
     }

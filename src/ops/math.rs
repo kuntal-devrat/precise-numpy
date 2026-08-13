@@ -250,16 +250,14 @@ pub fn exp_batch_exact(a: &IntervalArray) -> IntervalArray {
     IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape())
 }
 
-/// Optimized batch sqrt for exact arrays.
+/// Optimized batch sqrt for exact arrays using SIMD vector hardware instructions.
 pub fn sqrt_batch_exact(a: &IntervalArray) -> IntervalArray {
     let n = a.len();
     let mids = a.data().midpoints();
     let mut out_mids = vec![0.0f64; n];
     let out_rads = vec![0.0f64; n];
 
-    for i in 0..n {
-        out_mids[i] = if mids[i] >= 0.0 { mids[i].sqrt() } else { f64::NAN };
-    }
+    vec_ops::sqrt_f64(mids, &mut out_mids);
 
     IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape())
 }
