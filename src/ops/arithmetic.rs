@@ -21,6 +21,20 @@ pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
         return result;
     }
 
+    // Exact b fast path: radius is unchanged!
+    if b.is_exact() {
+        vec_ops::add_f64(a_mids, b_mids, r_mids);
+        r_rads.copy_from_slice(a_rads);
+        return result;
+    }
+
+    // Exact a fast path: radius is unchanged!
+    if a.is_exact() {
+        vec_ops::add_f64(a_mids, b_mids, r_mids);
+        r_rads.copy_from_slice(b_rads);
+        return result;
+    }
+
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
         r_mids.par_chunks_mut(CHUNK)
@@ -60,6 +74,20 @@ pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     // Exact array fast path
     if a.is_exact() && b.is_exact() {
         vec_ops::sub_f64(a_mids, b_mids, r_mids);
+        return result;
+    }
+
+    // Exact b fast path: radius is unchanged!
+    if b.is_exact() {
+        vec_ops::sub_f64(a_mids, b_mids, r_mids);
+        r_rads.copy_from_slice(a_rads);
+        return result;
+    }
+
+    // Exact a fast path: radius is unchanged!
+    if a.is_exact() {
+        vec_ops::sub_f64(a_mids, b_mids, r_mids);
+        r_rads.copy_from_slice(b_rads);
         return result;
     }
 
@@ -116,6 +144,13 @@ pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
         return result;
     }
 
+    // Exact a fast path: radius = |a_mid| * b_rad
+    if a.is_exact() {
+        vec_ops::mul_f64(a_mids, b_mids, r_mids);
+        vec_ops::abs_mul_f64(a_mids, b_rads, r_rads);
+        return result;
+    }
+
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
         r_mids.par_chunks_mut(CHUNK)
@@ -161,6 +196,42 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
         }
     }
 
+    // Exact array fast path: if both arrays have zero error, radii remain zero!
+    if a.is_exact() && b.is_exact() {
+        vec_ops::div_f64(a_mids, b_mids, r_mids);
+        return result;
+    }
+
+    // Exact b fast path: c_rad = a_rad / |b_mid|
+    if b.is_exact() {
+        let mut has_zero = false;
+        for i in 0..n {
+            if b_mids[i] == 0.0 {
+                has_zero = true;
+                break;
+            }
+        }
+        if !has_zero {
+            vec_ops::div_f64(a_mids, b_mids, r_mids);
+            let abs_b: Vec<f64> = b_mids.iter().map(|&x| x.abs()).collect();
+            vec_ops::div_f64(a_rads, &abs_b, r_rads);
+            return result;
+        }
+    }
+
+    // Exact a fast path: c_rad = |a_mid| * b_rad / |b_mid^2 - b_rad^2|
+    if a.is_exact() && !has_zero_crossing {
+        vec_ops::div_f64(a_mids, b_mids, r_mids);
+        for i in 0..n {
+            let am = a_mids[i];
+            let bm = b_mids[i];
+            let br = b_rads[i];
+            let denom = (bm * bm - br * br).abs();
+            r_rads[i] = (am.abs() * br) / denom;
+        }
+        return result;
+    }
+
     if has_zero_crossing {
         for i in 0..n {
             let a_iv = Interval::from_midpoint_radius(a_mids[i], a_rads[i]);
@@ -172,10 +243,6 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     } else {
         // Fast SIMD path: mid = a.mid / b.mid
         vec_ops::div_f64(a_mids, b_mids, r_mids);
-
-        if a.is_exact() && b.is_exact() {
-            return result;
-        }
 
         // Numerator & denominator via streaming ops
         for i in 0..n {
