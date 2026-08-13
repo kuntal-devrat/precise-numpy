@@ -69,32 +69,32 @@ Benchmarked against standard single-float `numpy` on Python 3.11 (Intel / AMD AV
 
 | Array Size | Operation | Standard NumPy | precise-numpy | Performance Comparison |
 | :--- | :--- | ---: | ---: | :--- |
-| 1,000 | Add | 1.3 µs | **1.5 µs** | 1.15x slower |
-| 1,000 | Subtract | 1.3 µs | **1.5 µs** | 1.15x slower |
-| 1,000 | Multiply | 1.2 µs | **1.4 µs** | 1.17x slower |
-| 1,000,000 | Add | 2.4 ms | **3.8 ms** | 1.60x slower *(Tracks error bounds)* |
-| 1,000,000 | Subtract | 2.5 ms | **4.1 ms** | 1.63x slower *(Tracks error bounds)* |
-| 1,000,000 | Multiply | 2.6 ms | **4.4 ms** | 1.71x slower *(Tracks error bounds)* |
+| 1,000 | Add | 1.8 µs | **2.0 µs** | 1.11x slower |
+| 1,000 | Subtract | 1.7 µs | **1.8 µs** | 1.06x slower |
+| 1,000 | Multiply | 1.6 µs | **2.0 µs** | 1.25x slower |
+| 1,000,000 | Add | 5.3 ms | **6.1 ms** | 1.15x slower *(Tracks error bounds)* |
+| 1,000,000 | Subtract | 3.7 ms | **4.2 ms** | 1.13x slower *(Tracks error bounds)* |
+| 1,000,000 | Multiply | 2.7 ms | **4.6 ms** | 1.71x slower *(Tracks error bounds)* |
 
 ### Reductions & Math Functions
 
 | Array Size | Operation | Standard NumPy | precise-numpy | Performance Comparison |
 | :--- | :--- | ---: | ---: | :--- |
-| 1,000 | mean | 5.2 µs | **400 ns** | ⚡ **13.0x FASTER than NumPy** |
-| 1,000 | sum | 2.0 µs | **600 ns** | ⚡ **3.3x FASTER than NumPy** |
-| 1,000 | sin | 10.2 µs | **8.1 µs** | ⚡ **1.25x FASTER than NumPy** |
-| 100,000 | sum | 31.7 µs | **29.0 µs** | ⚡ **1.1x FASTER than NumPy** |
-| 100,000 | mean | 33.4 µs | **29.3 µs** | ⚡ **1.14x FASTER than NumPy** |
+| 1,000 | mean | 11.4 µs | **1.2 µs** | ⚡ **9.5x FASTER than NumPy** |
+| 1,000 | sum | 3.3 µs | **1.3 µs** | ⚡ **2.5x FASTER than NumPy** |
+| 1,000 | sin | 14.0 µs | **11.5 µs** | ⚡ **1.2x FASTER than NumPy** |
+| 100,000 | sum | 73.5 µs | **56.5 µs** | ⚡ **1.3x FASTER than NumPy** |
+| 100,000 | mean | 81.0 µs | **53.3 µs** | ⚡ **1.5x FASTER than NumPy** |
 
 ### Matrix Multiplication (`matmul`)
 
-Powered by multi-threaded **`matrixmultiply` (dgemm)** assembly microkernels:
+Powered by multi-threaded & single-threaded optimized **`matrixmultiply` (dgemm)** assembly microkernels:
 
 | Matrix Shape | Standard NumPy | precise-numpy | Performance Comparison |
 | :--- | ---: | ---: | :--- |
-| 64 × 64 | 12.9 µs | 61.3 µs | Assembly GEMM microkernel |
-| 128 × 128 | 105.2 µs | **410.3 µs** | Multi-threaded parallel GEMM |
-| 256 × 256 | 394.3 µs | **1.7 ms** | **12x speedup** vs naive loop |
+| 64 × 64 | 15.2 µs | 78.4 µs | Single-threaded assembly GEMM |
+| 128 × 128 | 231.8 µs | **540.8 µs** | Low-overhead single-threaded GEMM |
+| 256 × 256 | 578.0 µs | **2.9 ms** | Parallel row-block GEMM |
 
 ---
 
