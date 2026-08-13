@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "precise-numpy"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance NumPy-compatible interval arrays with guaranteed numerical error bounds"
 readme = "README.md"
 license = {text = "MIT"}
