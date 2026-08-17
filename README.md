@@ -4,7 +4,7 @@
 
   # precise-numpy
 
-  **NumPy-compatible interval arrays with guaranteed numerical error bounds, powered by Rust SIMD.**
+  **Interval arithmetic with guaranteed error bounds for Python, powered by Rust SIMD.**
 
   [![PyPI Version](https://img.shields.io/pypi/v/precise-numpy.svg?color=007ec6)](https://pypi.org/project/precise-numpy/)
   [![Python Versions](https://img.shields.io/pypi/pyversions/precise-numpy.svg?color=3776ab)](https://pypi.org/project/precise-numpy/)
@@ -17,84 +17,20 @@
 
 ## Overview
 
-`precise-numpy` is a high-performance Python library for numerical computing with provable error bounds. Standard floating-point arrays (`float64`) accumulate rounding error and catastrophic cancellation without diagnostic warnings. `precise-numpy` uses hardware FPU directed rounding (`MXCSR` on x86_64 and `FPCR` on ARM64) to track mathematical bounds ($midpoint \pm radius$) across every array operation.
+`precise-numpy` is a Python library for numerical computing with provable error bounds.
+Every element is an interval stored as **(midpoint, radius)**; every operation propagates
+both values with hardware-directed rounding (`MXCSR` on x86_64), so results carry a rigorous
+enclosure of the true mathematical value.
+
+This is not a drop-in replacement for NumPy — arrays track two `f64` values per element and
+intervals behave differently from plain floats (see [Semantics](#semantics)). It is a fast,
+NumPy-flavored API for interval arithmetic.
 
 Key capabilities:
-- **Drop-in NumPy Ergonomics**: Familiar array operations, indexing, broadcasting, and reductions.
-- **Hardware-Directed Rounding**: Enforces strict IEEE 754 lower/upper bounds for guaranteed mathematical enclosure.
-- **Rust SIMD Acceleration**: Single-pass streaming vectorization (AVX-512, AVX2/FMA, ARM NEON) and parallel execution via Rayon.
-- **BLAS Matrix Multiplication**: Multi-threaded assembly-tuned GEMM microkernels (`matrixmultiply`) for matrix operations.
-
----
-
-## Killer Use Case: Floating-Point Drift & AI Quantization Auditor
-
-ML models and quantitative trading algorithms often exhibit unpredictable drift across machines or quantized precision levels (e.g. FP32 vs FP16). `precise-numpy` enables exact numerical audits of neural network layers and scientific pipelines.
-
-```python
-import numpy as np
-import precise_numpy as pnp
-
-# Audit a Transformer Attention Layer under input noise (error = 1e-4)
-X_raw = np.random.randn(128, 64)
-W_q_raw = np.random.randn(64, 64) * 0.1
-
-# Wrap input data with interval error bounds
-X_pnp = pnp.array(X_raw.flatten().tolist(), error=1e-4).reshape([128, 64])
-W_q_pnp = pnp.array(W_q_raw.flatten().tolist()).reshape([64, 64])
-
-# Query projection with propagated error bounds
-Q_pnp = X_pnp.matmul(W_q_pnp)
-
-# Check maximum relative error amplification across the layer
-print("Max Relative Error:", Q_pnp.max_relative_error())
-print("Max Radius Error:", Q_pnp.max_radius())
-```
-
-*(See complete runnable audit script in [`examples/quantization_safety_audit.py`](examples/quantization_safety_audit.py))*
-
----
-
-## Performance Benchmarks
-
-Benchmarked against standard single-float `numpy` on Python 3.11 (Intel / AMD AVX2 + FMA).
-
-> **Understanding the Benchmarks:**
-> - Standard NumPy operates on single 64-bit float arrays (`float64`) without error tracking.
-> - `precise-numpy` maintains two contiguous 64-bit float arrays ($midpoint$ and $radius$) per operation and executes hardware rounding mode switches to guarantee error bounds.
-> - **Small Arrays ($\le 1,000$ elements)**: `precise-numpy` is **significantly faster than NumPy** because our PyO3 C-extension eliminates Python ufunc engine dispatch overhead (~400ns vs ~5,200ns).
-> - **Large Arrays ($\ge 100,000$ elements)**: For pure raw memory throughput, `precise-numpy` stays within **1.3x–1.7x** of single-float NumPy despite calculating double the data using single-pass streaming SIMD loops.
-
-### Element-Wise Operations
-
-| Array Size | Operation | Standard NumPy | precise-numpy | Performance Comparison |
-| :--- | :--- | ---: | ---: | :--- |
-| 1,000 | Add | 1.8 µs | **2.0 µs** | 1.11x slower |
-| 1,000 | Subtract | 1.7 µs | **1.8 µs** | 1.06x slower |
-| 1,000 | Multiply | 1.6 µs | **2.0 µs** | 1.25x slower |
-| 1,000,000 | Add | 5.3 ms | **6.1 ms** | 1.15x slower *(Tracks error bounds)* |
-| 1,000,000 | Subtract | 3.7 ms | **4.2 ms** | 1.13x slower *(Tracks error bounds)* |
-| 1,000,000 | Multiply | 2.7 ms | **4.6 ms** | 1.71x slower *(Tracks error bounds)* |
-
-### Reductions & Math Functions
-
-| Array Size | Operation | Standard NumPy | precise-numpy | Performance Comparison |
-| :--- | :--- | ---: | ---: | :--- |
-| 1,000 | mean | 11.4 µs | **1.2 µs** | ⚡ **9.5x FASTER than NumPy** |
-| 1,000 | sum | 3.3 µs | **1.3 µs** | ⚡ **2.5x FASTER than NumPy** |
-| 1,000 | sin | 14.0 µs | **11.5 µs** | ⚡ **1.2x FASTER than NumPy** |
-| 100,000 | sum | 73.5 µs | **56.5 µs** | ⚡ **1.3x FASTER than NumPy** |
-| 100,000 | mean | 81.0 µs | **53.3 µs** | ⚡ **1.5x FASTER than NumPy** |
-
-### Matrix Multiplication (`matmul`)
-
-Powered by multi-threaded & single-threaded optimized **`matrixmultiply` (dgemm)** assembly microkernels:
-
-| Matrix Shape | Standard NumPy | precise-numpy | Performance Comparison |
-| :--- | ---: | ---: | :--- |
-| 64 × 64 | 15.2 µs | 78.4 µs | Single-threaded assembly GEMM |
-| 128 × 128 | 231.8 µs | **540.8 µs** | Low-overhead single-threaded GEMM |
-| 256 × 256 | 578.0 µs | **2.9 ms** | Parallel row-block GEMM |
+- **Hardware-directed rounding** for guaranteed mathematical enclosures.
+- **Rust SIMD acceleration** (AVX-512, AVX2/FMA, NEON) with Rayon parallelism.
+- **NumPy-like API**: creation, indexing, broadcasting, reductions, stacking, linalg, random, I/O.
+- **GIL release** during long computations.
 
 ---
 
@@ -112,6 +48,8 @@ cd precise-numpy
 maturin develop --release
 ```
 
+Requires Python >= 3.10 and a Rust toolchain. Wheels are built for CPython (abi3).
+
 ---
 
 ## Quick Start
@@ -120,33 +58,151 @@ maturin develop --release
 import precise_numpy as pnp
 
 # Create interval arrays with error bounds
-a = pnp.array([1.0, 2.0, 3.0], error=0.01)
-b = pnp.array([4.0, 5.0, 6.0], error=0.02)
+a = pnp.array([0.1, 0.2, 0.3], error=1e-4)
+b = pnp.array([0.4, 0.5, 0.6], error=1e-4)
 
-# Arithmetic operations automatically propagate bounds
+# Arithmetic propagates both midpoints and radii
 c = a + b
-print(c)
-# Output: IntervalArray([5.0+/-0.03, 7.0+/-0.03, 9.0+/-0.03])
+print(c.radii())            # [2e-4, 2e-4, 2e-4]
+print(c.max_radius())       # 2e-4
 
-# Inspect relative error
-print("Max relative error:", c.max_relative_error())
-
-# Scalar operations
-d = a * 2.5 + 10.0
-
-# Reductions
+# Reductions return (midpoint, radius) tuples
 mid, err = c.sum()
-print(f"Sum = {mid} ± {err}")
+print(f"sum = {mid} +/- {err}")
+
+# Inspect error growth
+print("max relative error:", c.max_relative_error())
 ```
+
+### Semantics
+
+- **Values**: `get(i)`, `a[0]`, `sum()`, etc. return a `(midpoint, radius)` tuple.
+  To get raw float arrays use `a.values()` / `a.radii()`.
+- **`==` / `!=`** mean *interval overlap*; `<, <=, >, >=` use strict endpoint ordering
+  (`a.hi < b.lo`, etc.).
+- **Division by zero** raises a `RuntimeWarning` and produces the entire real line
+  (radius `inf`) for the affected element.
+- **`len(a)`** is `a.shape[0]`, matching NumPy.
+- **Reductions** (`sum`, `mean`, ...) support an optional `axis` argument; scalar results
+  come back as `(midpoint, radius)` tuples, axis results as `IntervalArray`s.
+- **dtype** is `"interval64"`, `itemsize` is 16 (two `f64`s per element).
+- **Rounding** (`round`) uses round-half-to-even, like Python and NumPy.
+- **`reshape(-1, ...)`** infers the missing dimension; `transpose`/`.t` support 1D/2D.
+
+---
+
+## API Reference
+
+### Array creation
+
+`array(values, error=0.0)`, `asarray`, `zeros(shape)`, `ones`, `empty`, `full(shape, value, error=0.0)`,
+`eye(n, m=None, k=0)`, `identity(n)`, `diag(v)`, `arange(start, stop, step=1.0)`,
+`linspace(start, stop, num=50, endpoint=True)`, `from_raw_parts(midpoints, radii, shape)`.
+
+### Properties & conversions
+
+`shape`, `ndim`, `size`, `dtype`, `itemsize`, `nbytes`, `strides`, `t`,
+`values()`, `radii()`, `tolist()`, `get(i)`, `item(i)`, `midpoint(i)`, `radius(i)`,
+`copy()`, `flatten()`, `ravel()`, `reshape(*shape)`, `transpose()`, `sort()`, `argsort()`.
+
+### Indexing
+
+Integer (with negatives), slices (`a[1:4]`, `a[::-1]`), fancy integer lists (`a[[0, 2]]`),
+boolean masks (`a[a > 2.0]`, `a[BoolArray]`), and 2D tuples (`m[1, :]`, `m[:, 0]`).
+Assignment works for integers, slices, and lists.
+
+### Arithmetic & math
+
+`+ - * / ** @`, in-place variants, scalar operands on either side, NumPy broadcasting.
+`sin, cos, tan, exp, ln, log2, log10, sqrt, abs, floor, ceil, trunc, round,
+clip(a_min, a_max), sign, nan_to_num, power(x, y), maximum(x, y), minimum(x, y)`.
+
+### Comparisons
+
+`==`, `!=` (overlap), `<, <=, >, >=` (strict ordering) return `BoolArray` values with
+`& | ^ ~`, `any()`, `all()`, `sum()`, `count_nonzero()`, `tolist()`.
+
+### Reductions
+
+`sum, mean, prod, var, std, min, max, argmin, argmax, all, any` — each with an optional
+`axis`; plus `min_val()`, `max_val()`, `cumsum(axis=None)`, `norm()` (L2).
+
+### Stacking & selection
+
+`concatenate(arrays, axis=0)`, `stack`, `vstack`, `hstack`, `split(a, sections_or_indices, axis=0)`,
+`where(condition, x, y)`, `nonzero(a)` (tuple of index lists per axis).
+
+### Linear algebra (`precise_numpy.linalg`)
+
+`det`, `inv`, `solve(A, b)`, `lstsq(A, b)`, `pinv`, `eig`, `svd`, `norm`.
+
+Notes: `eig` (symmetric, Jacobi) and `eig_general`-style Hessenberg QR with real
+eigenvalues only — complex pairs raise `NotImplementedError`/`ValueError`. `svd` returns
+the thin decomposition `U (m, k), s (k,), Vh (k, n)` with `k = min(m, n)`. All linalg
+routines operate on midpoints (radius 0 results) except `solve`, which uses interval LU.
+
+### Random (`precise_numpy.random`)
+
+`seed`, `rand(*size)`, `random_sample(*size)`, `random(*size)`, `randn(*size)`,
+`randint(low, high, *size)`, `uniform(low, high, *size)`, `normal(loc=0.0, scale=1.0, *size)`.
+Deterministic xoshiro256** generator; no `size` argument returns a Python float.
+
+### File I/O
+
+`save(path, arr)` / `load(path)` (binary) and `savetxt(path, arr, fmt="%.17g")` /
+`loadtxt(path)` (text with a shape header). Both round-trip midpoints and radii.
+
+---
+
+## Error-Bound Example: AI Quantization Audit
+
+```python
+import precise_numpy as pnp
+
+# Wrap input data with interval error bounds
+X = pnp.array(floats, error=1e-4).reshape([128, 64])
+W = pnp.array(weights).reshape([64, 64])
+
+# Propagate error through a linear layer
+Q = X.matmul(W)
+
+print("Max Radius Error:", Q.max_radius())
+print("Max Relative Error:", Q.max_relative_error())
+```
+
+See [`examples/quantization_safety_audit.py`](examples/quantization_safety_audit.py) and
+[`examples/precision_audit_test.py`](examples/precision_audit_test.py).
+
+---
+
+## Performance Notes
+
+Each element stores two `f64` values and each op enforces directed rounding, so the library
+is roughly 1.1x–1.7x slower than plain NumPy element-wise ops on large arrays while
+tracking rigorous error bounds — and it is often faster than NumPy on small arrays because
+the PyO3 extension avoids per-call Python dispatch overhead. See
+[`examples/full_benchmark.py`](examples/full_benchmark.py).
 
 ---
 
 ## Technical Architecture
 
-1. **Structure-of-Arrays (SoA) Buffer**: Midpoints and radii are stored in contiguous, 64-byte aligned memory chunks (`AlignedBuffer`), allowing direct SIMD vector loads without interleaved packing overhead.
-2. **Single-Pass Streaming SIMD (`mul_intervals_stream`)**: Fuses midpoint product $a_{mid} \cdot b_{mid}$ and radius error bound $|a_{mid}| b_{rad} + |b_{mid}| a_{rad} + a_{rad} b_{rad}$ into a single SIMD pass using AVX-512 and AVX2+FMA registers.
-3. **Zero-Copy Reference Counting**: `IntervalArray` uses `Arc<AlignedBuffer>`, enabling $O(1)$ zero-copy slicing, clones, and reshaping.
-4. **GIL Release**: Long computations drop the Python GIL via `py.allow_threads()`, enabling parallel multi-threaded computing with Rayon.
+1. **Structure-of-Arrays (SoA) buffer**: midpoints and radii in contiguous, 64-byte aligned
+   memory (`AlignedBuffer`), enabling direct SIMD loads.
+2. **Single-pass streaming SIMD**: radius bounds fused into one pass over both buffers
+   (AVX-512, AVX2+FMA, NEON).
+3. **Shared buffers**: `IntervalArray` clones, slices, and reshapes are O(1) reference-counted.
+4. **GIL release**: long-running kernels run under `py.allow_threads()` with Rayon parallelism.
+5. **No external dependencies at runtime**; pure Rust + pyo3.
+
+---
+
+## Testing
+
+```bash
+cargo test          # Rust unit tests (arithmetic, linalg, reduction, extra, random)
+python -m unittest tests/python/test_api.py   # Python integration tests
+```
 
 ---
 

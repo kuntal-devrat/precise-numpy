@@ -145,6 +145,11 @@ impl IntervalArray {
 
     /// Compute strides from shape (row-major).
     fn compute_strides(shape: &[usize]) -> Vec<usize> {
+        Self::compute_strides_pub(shape)
+    }
+
+    /// Compute strides from shape (row-major), exposed for other modules.
+    pub fn compute_strides_pub(shape: &[usize]) -> Vec<usize> {
         let ndim = shape.len();
         if ndim == 0 {
             return vec![];

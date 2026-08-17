@@ -326,6 +326,132 @@ pub fn norm_l2(a: &IntervalArray) -> Interval {
     Interval::new(lo.sqrt(), hi.sqrt())
 }
 
+/// Result of a generalized dot/matmul: either a scalar interval (1D·1D) or
+/// an array.
+pub enum MatmulResult {
+    Scalar(Interval),
+    Array(IntervalArray),
+}
+
+/// NumPy-style `dot`: handles 1D·1D (scalar), 2D·1D, 1D·2D, and 2D·2D.
+pub fn dot_general(a: &IntervalArray, b: &IntervalArray) -> Result<MatmulResult, String> {
+    let (da, db) = (a.ndim(), b.ndim());
+    match (da, db) {
+        (1, 1) => {
+            if a.len() != b.len() {
+                return Err(format!(
+                    "dot: shapes ({},) and ({},) not aligned",
+                    a.len(),
+                    b.len()
+                ));
+            }
+            Ok(MatmulResult::Scalar(dot(a, b)))
+        }
+        (2, 1) => {
+            let (m, k) = (a.shape()[0], a.shape()[1]);
+            if k != b.len() {
+                return Err(format!(
+                    "dot: shapes ({}, {}) and ({},) not aligned",
+                    m, k, b.len()
+                ));
+            }
+            let b2 = b.reshape(&[k, 1]);
+            let out = matmul(a, &b2);
+            Ok(MatmulResult::Array(out.reshape(&[m])))
+        }
+        (1, 2) => {
+            let (k, n) = (b.shape()[0], b.shape()[1]);
+            if a.len() != k {
+                return Err(format!(
+                    "dot: shapes ({},) and ({}, {}) not aligned",
+                    a.len(),
+                    k,
+                    n
+                ));
+            }
+            let a2 = a.reshape(&[1, k]);
+            Ok(MatmulResult::Array(matmul(&a2, b)))
+        }
+        (2, 2) => {
+            let (m, k, n) = (a.shape()[0], a.shape()[1], b.shape()[1]);
+            if k != b.shape()[0] {
+                return Err(format!(
+                    "dot: shapes ({}, {}) and ({}, {}) not aligned",
+                    m,
+                    k,
+                    b.shape()[0],
+                    n
+                ));
+            }
+            Ok(MatmulResult::Array(matmul(a, b)))
+        }
+        _ => Err(format!(
+            "dot: unsupported dimensionalities {}D and {}D",
+            da, db
+        )),
+    }
+}
+
+/// NumPy-style `matmul`: 1D vectors are promoted per numpy rules
+/// (1D·1D -> scalar, 1D·2D -> 1D, 2D·1D -> 1D, 2D·2D -> 2D).
+pub fn matmul_general(a: &IntervalArray, b: &IntervalArray) -> Result<MatmulResult, String> {
+    let (da, db) = (a.ndim(), b.ndim());
+    match (da, db) {
+        (1, 1) => {
+            if a.len() != b.len() {
+                return Err(format!(
+                    "matmul: shapes ({},) and ({},) not aligned",
+                    a.len(),
+                    b.len()
+                ));
+            }
+            Ok(MatmulResult::Scalar(dot(a, b)))
+        }
+        (2, 1) => {
+            let (m, k) = (a.shape()[0], a.shape()[1]);
+            if k != b.len() {
+                return Err(format!(
+                    "matmul: shapes ({}, {}) and ({},) not aligned",
+                    m, k, b.len()
+                ));
+            }
+            let b2 = b.reshape(&[k, 1]);
+            let out = matmul(a, &b2);
+            Ok(MatmulResult::Array(out.reshape(&[m])))
+        }
+        (1, 2) => {
+            let (k, n) = (b.shape()[0], b.shape()[1]);
+            if a.len() != k {
+                return Err(format!(
+                    "matmul: shapes ({},) and ({}, {}) not aligned",
+                    a.len(),
+                    k,
+                    n
+                ));
+            }
+            let a2 = a.reshape(&[1, k]);
+            Ok(MatmulResult::Array(matmul(&a2, b).reshape(&[n])))
+        }
+        (2, 2) => {
+            let (m, k, n) = (a.shape()[0], a.shape()[1], b.shape()[1]);
+            if k != b.shape()[0] {
+                return Err(format!(
+                    "matmul: shapes ({}, {}) and ({}, {}) not aligned",
+                    m,
+                    k,
+                    b.shape()[0],
+                    n
+                ));
+            }
+            Ok(MatmulResult::Array(matmul(a, b)))
+        }
+        _ => Err(format!(
+            "matmul: unsupported dimensionalities {}D and {}D",
+            da, db
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +473,29 @@ mod tests {
         assert!((c.get(1).midpoint() - 22.0).abs() < 1e-10);
         assert!((c.get(2).midpoint() - 43.0).abs() < 1e-10);
         assert!((c.get(3).midpoint() - 50.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_matmul_general_1d() {
+        let a = IntervalArray::from_f64_slice(&[1.0, 2.0, 3.0]);
+        let b = IntervalArray::from_f64_slice(&[4.0, 5.0, 6.0]);
+        match matmul_general(&a, &b).unwrap() {
+            MatmulResult::Scalar(iv) => assert!((iv.midpoint() - 32.0).abs() < 1e-10),
+            MatmulResult::Array(_) => panic!("expected scalar"),
+        }
+    }
+
+    #[test]
+    fn test_dot_general_2d_1d() {
+        let a = IntervalArray::from_f64_vec(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let b = IntervalArray::from_f64_slice(&[5.0, 6.0]);
+        match dot_general(&a, &b).unwrap() {
+            MatmulResult::Scalar(_) => panic!("expected array"),
+            MatmulResult::Array(out) => {
+                assert_eq!(out.shape(), &[2]);
+                assert!((out.get(0).midpoint() - 17.0).abs() < 1e-10);
+                assert!((out.get(1).midpoint() - 39.0).abs() < 1e-10);
+            }
+        }
     }
 }

@@ -197,7 +197,7 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     }
 
     // Exact array fast path: if both arrays have zero error, radii remain zero!
-    if a.is_exact() && b.is_exact() {
+    if a.is_exact() && b.is_exact() && !has_zero_crossing {
         vec_ops::div_f64(a_mids, b_mids, r_mids);
         return result;
     }
