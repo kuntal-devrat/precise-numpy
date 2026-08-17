@@ -28,13 +28,21 @@ impl Interval {
     }
 
     /// Create an interval from a midpoint and radius.
+    ///
+    /// The endpoints are computed with outward (directed) rounding so that
+    /// the resulting [lo, hi] is guaranteed to contain {x : |x - mid| <= radius}.
     #[inline]
     pub fn from_midpoint_radius(mid: f64, radius: f64) -> Self {
-        debug_assert!(radius >= 0.0);
-        Self {
-            lo: mid - radius,
-            hi: mid + radius,
+        debug_assert!(radius >= 0.0 || radius.is_nan());
+        if mid.is_nan() || radius.is_nan() {
+            return Self { lo: f64::NAN, hi: f64::NAN };
         }
+        if radius == f64::INFINITY {
+            return Interval::entire();
+        }
+        let lo = sub_rd(mid, radius);
+        let hi = add_ru(mid, radius);
+        Self { lo, hi }
     }
 
     /// The zero-width interval [0, 0].
@@ -67,10 +75,28 @@ impl Interval {
         (self.lo + self.hi) * 0.5
     }
 
-    /// Radius (half-width) of the interval.
+    /// Radius (half-width) of the interval, rounded outward so that
+    /// {x : |x - midpoint()| <= radius()} always contains [lo, hi].
     #[inline]
     pub fn radius(&self) -> f64 {
-        (self.hi - self.lo) * 0.5
+        if self.lo == self.hi {
+            return 0.0;
+        }
+        if !self.lo.is_finite() || !self.hi.is_finite() {
+            return f64::INFINITY;
+        }
+        let mid = self.midpoint();
+        // hi - mid and mid - lo with exact residuals (TwoSum), then take the
+        // larger value with its residual and round the radius up.
+        let s1 = self.hi - mid;
+        let e1 = two_sum_err(self.hi, -mid, s1);
+        let s2 = mid - self.lo;
+        let e2 = two_sum_err(mid, -self.lo, s2);
+        if s1 >= s2 {
+            ru(s1, e1)
+        } else {
+            ru(s2, e2)
+        }
     }
 
     /// Width of the interval (hi - lo).
@@ -171,25 +197,18 @@ impl std::ops::Mul for Interval {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
-        // Optimized: batch rounding mode switches instead of 8 separate toggles.
-        // We compute all round-down products together, then all round-up products.
+        // All four products with directed rounding; the min/max combine them.
         let (lo, hi);
 
-        set_round_down();
-        let p1_lo = self.lo * rhs.lo;
-        let p2_lo = self.lo * rhs.hi;
-        let p3_lo = self.hi * rhs.lo;
-        let p4_lo = self.hi * rhs.hi;
-        lo = p1_lo.min(p2_lo).min(p3_lo).min(p4_lo);
+        lo = mul_rd(self.lo, rhs.lo)
+            .min(mul_rd(self.lo, rhs.hi))
+            .min(mul_rd(self.hi, rhs.lo))
+            .min(mul_rd(self.hi, rhs.hi));
 
-        set_round_up();
-        let p1_hi = self.lo * rhs.lo;
-        let p2_hi = self.lo * rhs.hi;
-        let p3_hi = self.hi * rhs.lo;
-        let p4_hi = self.hi * rhs.hi;
-        hi = p1_hi.max(p2_hi).max(p3_hi).max(p4_hi);
-
-        restore_rounding();
+        hi = mul_ru(self.lo, rhs.lo)
+            .max(mul_ru(self.lo, rhs.hi))
+            .max(mul_ru(self.hi, rhs.lo))
+            .max(mul_ru(self.hi, rhs.hi));
 
         Self { lo, hi }
     }
@@ -285,169 +304,257 @@ impl std::ops::Div<f64> for Interval {
 
 // ── Directed rounding helpers ──────────────────────────────────────────
 
-/// Add with round-down (toward -infinity).
+/// Exact TwoSum error of fl(a + b): returns e such that a + b = fl(a + b) + e.
 #[inline]
-fn add_rd(a: f64, b: f64) -> f64 {
-    set_round_down();
-    let r = a + b;
-    restore_rounding();
-    r
+pub(crate) fn two_sum_err(a: f64, b: f64, s: f64) -> f64 {
+    let bv = s - a;
+    let av = s - bv;
+    let br = b - bv;
+    let ar = a - av;
+    ar + br
 }
 
-/// Add with round-up (toward +infinity).
+/// Round a value upward given an exact residual: if v = s + e with s the
+/// round-to-nearest evaluation, returns fl_ru(v).
 #[inline]
-fn add_ru(a: f64, b: f64) -> f64 {
-    set_round_up();
-    let r = a + b;
-    restore_rounding();
-    r
+fn ru(s: f64, e: f64) -> f64 {
+    let t = s + e;
+    if !t.is_finite() {
+        return t;
+    }
+    let e2 = two_sum_err(s, e, t);
+    if e2 > 0.0 {
+        next_up(t)
+    } else {
+        t
+    }
+}
+
+/// Round a value downward given an exact residual: if v = s + e with s the
+/// round-to-nearest evaluation, returns fl_rd(v).
+#[inline]
+fn rd(s: f64, e: f64) -> f64 {
+    let t = s + e;
+    if !t.is_finite() {
+        return t;
+    }
+    let e2 = two_sum_err(s, e, t);
+    if e2 < 0.0 {
+        next_down(t)
+    } else {
+        t
+    }
+}
+
+/// Add with round-down (toward -infinity). Exact; no rounding-mode changes.
+///
+/// e = (a + b) - s is the exact rounding residual: if e < 0 the true sum
+/// lies below s (including exact-tie cases where RTN picked the upper
+/// neighbor), so the directed result moves one ulp down.
+#[inline]
+pub(crate) fn add_rd(a: f64, b: f64) -> f64 {
+    let s = a + b;
+    if s.is_finite() {
+        let e = two_sum_err(a, b, s);
+        if e < 0.0 {
+            next_down(s)
+        } else {
+            s
+        }
+    } else if s == f64::INFINITY {
+        f64::MAX
+    } else {
+        s
+    }
+}
+
+/// Add with round-up (toward +infinity). Exact; no rounding-mode changes.
+#[inline]
+pub(crate) fn add_ru(a: f64, b: f64) -> f64 {
+    let s = a + b;
+    if s.is_finite() {
+        let e = two_sum_err(a, b, s);
+        if e > 0.0 {
+            next_up(s)
+        } else {
+            s
+        }
+    } else if s == f64::NEG_INFINITY {
+        f64::MIN
+    } else {
+        s
+    }
 }
 
 /// Subtract with round-down.
 #[inline]
-fn sub_rd(a: f64, b: f64) -> f64 {
-    set_round_down();
-    let r = a - b;
-    restore_rounding();
-    r
+pub(crate) fn sub_rd(a: f64, b: f64) -> f64 {
+    add_rd(a, -b)
 }
 
 /// Subtract with round-up.
 #[inline]
-fn sub_ru(a: f64, b: f64) -> f64 {
-    set_round_up();
-    let r = a - b;
-    restore_rounding();
-    r
+pub(crate) fn sub_ru(a: f64, b: f64) -> f64 {
+    add_ru(a, -b)
 }
 
-/// Multiply with round-down.
+/// Multiply with round-down. Exact; uses the FMA residual (mul_add is
+/// exact on all platforms: it returns the correctly rounded result of
+/// a*b + c, and the residual a*b - fl(a*b) is exactly representable).
 #[inline]
-fn mul_rd(a: f64, b: f64) -> f64 {
-    set_round_down();
-    let r = a * b;
-    restore_rounding();
-    r
+pub(crate) fn mul_rd(a: f64, b: f64) -> f64 {
+    let s = a * b;
+    if s.is_finite() {
+        let e = -a.mul_add(b, -s);
+        if e < 0.0 {
+            next_down(s)
+        } else {
+            s
+        }
+    } else if s == f64::INFINITY {
+        f64::MAX
+    } else {
+        s
+    }
 }
 
 /// Multiply with round-up.
 #[inline]
-fn mul_ru(a: f64, b: f64) -> f64 {
-    set_round_up();
-    let r = a * b;
-    restore_rounding();
-    r
+pub(crate) fn mul_ru(a: f64, b: f64) -> f64 {
+    let s = a * b;
+    if s.is_finite() {
+        let e = -a.mul_add(b, -s);
+        if e > 0.0 {
+            next_up(s)
+        } else {
+            s
+        }
+    } else if s == f64::NEG_INFINITY {
+        f64::MIN
+    } else {
+        s
+    }
 }
 
-/// Divide with round-down.
+/// Divide with round-down. The sign of the exact error b*s - a tells
+/// whether s = fl(a/b) lies above or below the exact quotient; when
+/// the quotient is exact (e == 0) the evaluation is returned as-is.
 #[inline]
 fn div_rd(a: f64, b: f64) -> f64 {
-    set_round_down();
-    let r = a / b;
-    restore_rounding();
+    let s = a / b;
+    if s.is_finite() {
+        let e = b.mul_add(s, -a);
+        if e != 0.0 && (e > 0.0) == (b > 0.0) {
+            next_down(s)
+        } else {
+            s
+        }
+    } else if s == f64::INFINITY {
+        f64::MAX
+    } else {
+        s
+    }
+}
+
+/// Divide with round-up. The sign of the exact error b*s - a tells
+/// whether s = fl(a/b) lies above or below the exact quotient; when
+/// the quotient is exact (e == 0) the evaluation is returned as-is.
+#[inline]
+pub(crate) fn div_ru(a: f64, b: f64) -> f64 {
+    let s = a / b;
+    if s.is_finite() {
+        let e = b.mul_add(s, -a);
+        if e != 0.0 && (e > 0.0) != (b > 0.0) {
+            next_up(s)
+        } else {
+            s
+        }
+    } else if s == f64::NEG_INFINITY {
+        f64::MIN
+    } else {
+        s
+    }
+}
+
+/// Directed (round-up) chained addition: fl_ru(x + y) given both values.
+#[inline]
+pub(crate) fn add_ru_chain(x: f64, y: f64) -> f64 {
+    let s = x + y;
+    if !s.is_finite() {
+        return s;
+    }
+    let e = two_sum_err(x, y, s);
+    if e > 0.0 {
+        next_up(s)
+    } else {
+        s
+    }
+}
+
+/// The successor of x (toward +infinity). Exact, works for ±0, ±inf, NaN.
+#[inline]
+pub(crate) fn next_up(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    if x == f64::INFINITY {
+        return x;
+    }
+    if x == 0.0 {
+        return f64::from_bits(1);
+    }
+    if x > 0.0 {
+        f64::from_bits(x.to_bits() + 1)
+    } else {
+        f64::from_bits(x.to_bits() - 1)
+    }
+}
+
+/// The predecessor of x (toward -infinity). Exact, works for ±0, ±inf, NaN.
+#[inline]
+pub(crate) fn next_down(x: f64) -> f64 {
+    -next_up(-x)
+}
+
+/// The result of applying `next_up` n times.
+#[inline]
+pub(crate) fn next_up_n(x: f64, n: u32) -> f64 {
+    let mut r = x;
+    for _ in 0..n {
+        r = next_up(r);
+    }
     r
 }
 
-/// Divide with round-up.
+/// The result of applying `next_down` n times.
 #[inline]
-fn div_ru(a: f64, b: f64) -> f64 {
-    set_round_up();
-    let r = a / b;
-    restore_rounding();
+pub(crate) fn next_down_n(x: f64, n: u32) -> f64 {
+    let mut r = x;
+    for _ in 0..n {
+        r = next_down(r);
+    }
     r
 }
 
-// ── FPU rounding mode control ──────────────────────────────────────────
-
-#[cfg(target_arch = "x86_64")]
+/// Half of the spacing between adjacent floats at x (0.5 ulp), exact.
+/// Returns 0.0 for x == 0, and inf for x == ±inf.
 #[inline]
-fn set_round_down() {
-    unsafe {
-        let mut mxcsr: u32 = 0;
-        std::arch::asm!(
-            "stmxcsr [{0}]",
-            in(reg) &mut mxcsr,
-            options(nostack),
-        );
-        mxcsr = (mxcsr & !0x6000) | 0x2000;
-        std::arch::asm!(
-            "ldmxcsr [{0}]",
-            in(reg) &mxcsr,
-            options(nostack),
-        );
+pub(crate) fn half_ulp(x: f64) -> f64 {
+    if x == 0.0 || x.is_nan() {
+        return 0.0;
     }
+    if x.is_infinite() {
+        return f64::INFINITY;
+    }
+    (next_up(x.abs()) - x.abs()) * 0.5
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn set_round_up() {
-    unsafe {
-        let mut mxcsr: u32 = 0;
-        std::arch::asm!(
-            "stmxcsr [{0}]",
-            in(reg) &mut mxcsr,
-            options(nostack),
-        );
-        mxcsr = (mxcsr & !0x6000) | 0x4000;
-        std::arch::asm!(
-            "ldmxcsr [{0}]",
-            in(reg) &mxcsr,
-            options(nostack),
-        );
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn restore_rounding() {
-    unsafe {
-        let mut mxcsr: u32 = 0;
-        std::arch::asm!(
-            "stmxcsr [{0}]",
-            in(reg) &mut mxcsr,
-            options(nostack),
-        );
-        mxcsr = mxcsr & !0x6000;
-        std::arch::asm!(
-            "ldmxcsr [{0}]",
-            in(reg) &mxcsr,
-            options(nostack),
-        );
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn set_round_down() {
-    unsafe {
-        let mut fpcr: u64 = 0;
-        std::arch::asm!("mrs {0}, FPCR", out(reg) fpcr);
-        fpcr = (fpcr & !0x0C00_0000) | 0x0400_0000;
-        std::arch::asm!("msr FPCR, {0}", in(reg) fpcr);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn set_round_up() {
-    unsafe {
-        let mut fpcr: u64 = 0;
-        std::arch::asm!("mrs {0}, FPCR", out(reg) fpcr);
-        fpcr = (fpcr & !0x0C00_0000) | 0x0800_0000;
-        std::arch::asm!("msr FPCR, {0}", in(reg) fpcr);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn restore_rounding() {
-    unsafe {
-        let mut fpcr: u64 = 0;
-        std::arch::asm!("mrs {0}, FPCR", out(reg) fpcr);
-        fpcr = fpcr & !0x0C00_0000;
-        std::arch::asm!("msr FPCR, {0}", in(reg) fpcr);
-    }
-}
+/// Number of ulps reserved for libm (CRT) function error on platforms
+/// without correctly-rounded transcendentals (notably MSVC's pow/exp/ln).
+/// IEEE-754 mandates correct rounding only for the basic operations and
+/// sqrt, so enclosures built from libm evaluations are expanded by this
+/// many ulps to stay rigorous in practice.
+pub(crate) const LIBSM_ULP_ALLOWANCE: u32 = 4;
 
 // ── Display ────────────────────────────────────────────────────────────
 

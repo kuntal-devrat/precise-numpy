@@ -1190,14 +1190,8 @@ impl PyIntervalArray {
     // ── Math functions ──
 
     fn sin(&self) -> Self {
-        if self.inner.is_exact() {
-            Self {
-                inner: math::sin_batch_exact(&self.inner),
-            }
-        } else {
-            Self {
-                inner: math::apply_unary(&self.inner, math::sin_interval),
-            }
+        Self {
+            inner: math::apply_unary(&self.inner, math::sin_interval),
         }
     }
 
@@ -1214,26 +1208,14 @@ impl PyIntervalArray {
     }
 
     fn exp(&self) -> Self {
-        if self.inner.is_exact() {
-            Self {
-                inner: math::exp_batch_exact(&self.inner),
-            }
-        } else {
-            Self {
-                inner: math::apply_unary(&self.inner, math::exp_interval),
-            }
+        Self {
+            inner: math::apply_unary(&self.inner, math::exp_interval),
         }
     }
 
     fn ln(&self) -> Self {
-        if self.inner.is_exact() {
-            Self {
-                inner: math::ln_batch_exact(&self.inner),
-            }
-        } else {
-            Self {
-                inner: math::apply_unary(&self.inner, math::ln_interval),
-            }
+        Self {
+            inner: math::apply_unary(&self.inner, math::ln_interval),
         }
     }
 
@@ -1250,14 +1232,8 @@ impl PyIntervalArray {
     }
 
     fn sqrt(&self) -> Self {
-        if self.inner.is_exact() {
-            Self {
-                inner: math::sqrt_batch_exact(&self.inner),
-            }
-        } else {
-            Self {
-                inner: math::apply_unary(&self.inner, math::sqrt_interval),
-            }
+        Self {
+            inner: math::apply_unary(&self.inner, math::sqrt_interval),
         }
     }
 
@@ -1837,21 +1813,42 @@ fn axis_list_return(py: Python<'_>, v: &[usize]) -> PyResult<Py<PyAny>> {
 /// zero-crossing divisors. The bool signals whether a zero was encountered.
 fn rdiv_scalar(a: &IntervalArray, s: f64) -> (IntervalArray, bool) {
     let n = a.len();
-    let mids = a.data().midpoints();
-    let rads = a.data().radii();
+    let a_mids = a.data().midpoints();
+    let a_rads = a.data().radii();
     let mut out_mids = vec![0.0f64; n];
     let mut out_rads = vec![0.0f64; n];
     let mut warn = false;
     for i in 0..n {
-        let x = Interval::from_midpoint_radius(mids[i], rads[i]);
-        let r = if x.lo <= 0.0 && x.hi >= 0.0 {
+        let am = a_mids[i];
+        let ar = a_rads[i];
+        let denom_lo = am - ar;
+        let denom_hi = am + ar;
+        if denom_lo <= 0.0 && denom_hi >= 0.0 {
             warn = true;
-            Interval::entire()
+            out_mids[i] = 0.0;
+            out_rads[i] = f64::INFINITY;
+            continue;
+        }
+        let r = s / am;
+        out_mids[i] = r;
+        let exact_err = if r.is_finite() {
+            am.mul_add(r, -s).abs()
         } else {
-            Interval::exact(s) * x.recip()
+            f64::INFINITY
         };
-        out_mids[i] = r.midpoint();
-        out_rads[i] = r.radius();
+        let den = if denom_lo > 0.0 { denom_lo } else { -denom_hi }.abs();
+        let nums = if den > 0.0 {
+            crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(
+                    crate::error::interval::mul_ru(r.abs(), ar),
+                    exact_err,
+                ),
+                crate::error::interval::mul_ru(ar, ar),
+            )
+        } else {
+            f64::INFINITY
+        };
+        out_rads[i] = crate::error::interval::div_ru(nums, den);
     }
     (IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape()), warn)
 }
@@ -2333,8 +2330,9 @@ fn random_size_dispatch(
 // ── Linear algebra ─────────────────────────────────────────────────────
 
 #[pyfunction]
-fn det(a: &Bound<'_, PyIntervalArray>) -> PyResult<f64> {
-    linalg::det(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))
+fn det(a: &Bound<'_, PyIntervalArray>) -> PyResult<(f64, f64)> {
+    let iv = linalg::det(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    Ok((iv.midpoint(), iv.radius()))
 }
 
 #[pyfunction]

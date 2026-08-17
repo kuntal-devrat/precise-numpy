@@ -444,7 +444,7 @@ class TestLinalg(unittest.TestCase):
         import precise_numpy.linalg as la
 
         m = pnp.array([4.0, 7.0, 2.0, 6.0]).reshape(2, 2)
-        self.assertAlmostEqual(la.det(m), 10.0)
+        self.assertAlmostEqual(la.det(m)[0], 10.0)
         i = la.inv(m)
         expected = [0.6, -0.7, -0.2, 0.4]
         for k in range(4):

@@ -1,6 +1,6 @@
 [package]
 name = "precise-numpy"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "High-performance NumPy-compatible interval arrays with guaranteed numerical error bounds, powered by Rust SIMD"
 license = "MIT"

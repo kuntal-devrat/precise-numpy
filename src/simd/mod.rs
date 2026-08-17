@@ -266,6 +266,160 @@ pub mod vec_ops {
         }
     }
 
+    // ── Rigorous directed-rounding kernels ──────────────────────────────
+    //
+    // These kernels compute the midpoint in round-to-nearest and a radius
+    // that includes the rounding error of the midpoint operation itself.
+    // Each kernel runs a round-to-nearest phase followed by a round-up
+    // phase; MXCSR/FPCR state is per-thread, so parallel chunked callers
+    // are safe as long as each chunk invokes the kernel on its own thread.
+
+    /// Rigorous interval addition: mid = fl(a_mid + b_mid), radius includes
+    /// the exact TwoSum rounding error of the midpoint sum.
+    pub fn add_intervals_rigorous(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+        let mut errs = vec![0.0f64; n];
+        for i in 0..n {
+            let am = a_mids[i];
+            let bm = b_mids[i];
+            let s = am + bm;
+            let bv = s - am;
+            let av = s - bv;
+            let br = bm - bv;
+            let ar = am - av;
+            r_mids[i] = s;
+            errs[i] = ar + br;
+        }
+        for i in 0..n {
+            r_rads[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(a_rads[i], b_rads[i]),
+                errs[i].abs(),
+            );
+        }
+    }
+
+    /// Rigorous interval subtraction: mid = fl(a_mid - b_mid), radius
+    /// includes the exact TwoSum rounding error of the midpoint difference.
+    pub fn sub_intervals_rigorous(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+        let mut errs = vec![0.0f64; n];
+        for i in 0..n {
+            let am = a_mids[i];
+            let bm = b_mids[i];
+            let s = am - bm;
+            let bv = s - am;
+            let av = s - bv;
+            let br = bm - bv;
+            let ar = am - av;
+            r_mids[i] = s;
+            errs[i] = ar + br;
+        }
+        for i in 0..n {
+            r_rads[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(a_rads[i], b_rads[i]),
+                errs[i].abs(),
+            );
+        }
+    }
+
+    /// Rigorous interval multiplication: mid = fl(a_mid * b_mid), radius
+    /// includes the exact FMA residual of the midpoint product (0 when the
+    /// product is exact), plus the input-radius contributions rounded up.
+    pub fn mul_intervals_rigorous(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+        let mut errs = vec![0.0f64; n];
+        for i in 0..n {
+            let am = a_mids[i];
+            let bm = b_mids[i];
+            let s = am * bm;
+            r_mids[i] = s;
+            if s.is_finite() {
+                errs[i] = am.mul_add(bm, -s).abs();
+            } else {
+                errs[i] = f64::INFINITY;
+            }
+        }
+        for i in 0..n {
+            r_rads[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(
+                    crate::error::interval::mul_ru(a_mids[i].abs(), b_rads[i]),
+                    crate::error::interval::mul_ru(b_mids[i].abs(), a_rads[i]),
+                ),
+                crate::error::interval::add_ru_chain(
+                    crate::error::interval::mul_ru(a_rads[i], b_rads[i]),
+                    errs[i],
+                ),
+            );
+        }
+    }
+
+    /// Rigorous interval division for a divisor interval that does not
+    /// contain zero. Radius = (a_rad + |s|*b_rad + half_ulp(s)*|b_mid|)
+    /// divided by (|b_mid| - b_rad), with outward rounding; if the
+    /// denominator is non-positive the result radius is +inf.
+    pub fn div_intervals_rigorous(
+        a_mids: &[f64],
+        a_rads: &[f64],
+        b_mids: &[f64],
+        b_rads: &[f64],
+        r_mids: &mut [f64],
+        r_rads: &mut [f64],
+    ) {
+        let n = a_mids.len();
+        for i in 0..n {
+            r_mids[i] = a_mids[i] / b_mids[i];
+        }
+        let mut nums = vec![0.0f64; n];
+        let mut dens = vec![0.0f64; n];
+        for i in 0..n {
+            dens[i] = crate::error::interval::sub_rd(b_mids[i].abs(), b_rads[i]);
+        }
+        for i in 0..n {
+            let bm = b_mids[i];
+            let s = r_mids[i];
+            let exact_err = if s.is_finite() {
+                bm.mul_add(s, -a_mids[i]).abs()
+            } else {
+                f64::INFINITY
+            };
+            nums[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(
+                    a_rads[i],
+                    exact_err,
+                ),
+                crate::error::interval::mul_ru(s.abs(), b_rads[i]),
+            );
+        }
+        for i in 0..n {
+            if dens[i] <= 0.0 {
+                r_rads[i] = f64::INFINITY;
+            } else {
+                r_rads[i] = crate::error::interval::div_ru(nums[i], dens[i]);
+            }
+        }
+    }
+
     /// Hardware SIMD vector square root.
     #[inline]
     pub fn sqrt_f64(a: &[f64], out: &mut [f64]) {

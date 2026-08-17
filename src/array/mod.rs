@@ -124,22 +124,21 @@ impl IntervalArray {
     }
 
     /// Create a 1D array with values from start to stop (exclusive) with given step.
+    ///
+    /// The number of elements follows NumPy semantics: `ceil((stop - start) / step)`
+    /// with a near-integer correction, and values are computed as `start + i * step`
+    /// (no incremental accumulation, so no drift).
     pub fn arange(start: f64, stop: f64, step: f64) -> Self {
-        assert!(step != 0.0, "arange: step cannot be zero");
-        let mut values = Vec::new();
-        if step > 0.0 {
-            let mut v = start;
-            while v < stop {
-                values.push(v);
-                v += step;
-            }
-        } else {
-            let mut v = start;
-            while v > stop {
-                values.push(v);
-                v += step;
-            }
+        if step == 0.0 {
+            return Self::zeros(&[0]);
         }
+        let delta = (stop - start) / step;
+        let mut count = delta.ceil();
+        if (delta - count.round()).abs() < 1e-12 * (1.0 + delta.abs()) {
+            count = count.round();
+        }
+        let n = count.max(0.0) as usize;
+        let values: Vec<f64> = (0..n).map(|i| start + i as f64 * step).collect();
         Self::from_f64_slice(&values)
     }
 

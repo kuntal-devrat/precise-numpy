@@ -3,11 +3,16 @@
 
 use crate::array::IntervalArray;
 use crate::error::Interval;
+use crate::error::interval::{
+    next_down, next_up, next_down_n, next_up_n, add_ru_chain, half_ulp, LIBSM_ULP_ALLOWANCE,
+};
 
 // ── Element-wise interval math ─────────────────────────────────────────
 
 /// Interval power with an exact-integer fast path (repeated squaring with
-/// directed rounding). Falls back to exp(b * ln(a)) for positive bases.
+/// directed rounding). For general exponents, the enclosure comes from
+/// exp(b * ln(a)) with outward rounding, and the midpoint is refined with
+/// the (accurately rounded) libm `powf`.
 pub fn pow_interval(base: Interval, exp: Interval) -> Interval {
     if exp.is_exact() {
         let e = exp.lo;
@@ -42,15 +47,58 @@ pub fn pow_interval(base: Interval, exp: Interval) -> Interval {
         if exp.lo > 0.0 {
             return Interval::exact(0.0);
         }
+        if exp.hi < 0.0 {
+            return Interval::new(f64::INFINITY, f64::INFINITY);
+        }
         return Interval::nan();
     }
     if base.hi <= 0.0 {
         return Interval::nan();
     }
     let ln_lo = if base.lo > 0.0 { base.lo } else { f64::MIN_POSITIVE };
-    let ln_iv = Interval::new(ln_lo.ln(), base.hi.ln());
+    let ln_iv = Interval::new(
+        next_down_n(ln_lo.ln(), LIBSM_ULP_ALLOWANCE),
+        next_up_n(base.hi.ln(), LIBSM_ULP_ALLOWANCE),
+    );
     let prod = exp * ln_iv;
-    Interval::new(prod.lo.exp(), prod.hi.exp())
+
+    // Rigorous enclosure of exp(prod) with outward rounding (exp is not
+    // correctly rounded on all platforms, hence the ulp allowance).
+    let hi_raw = if prod.hi > 709.0 { f64::INFINITY } else { prod.hi.exp() };
+    let lo_raw = if prod.lo < -745.0 { 0.0 } else { prod.lo.exp() };
+    let lo = next_down_n(lo_raw, LIBSM_ULP_ALLOWANCE).max(0.0);
+    let hi = next_up_n(hi_raw, LIBSM_ULP_ALLOWANCE);
+    if lo.is_nan() || hi.is_nan() {
+        return Interval::nan();
+    }
+
+    // Accurate midpoint via libm powf; the radius additionally covers the
+    // powf libm error (up to LIBSM_ULP_ALLOWANCE ulps), so the interval is
+    // centered tightly while remaining rigorous.
+    let bm = base.midpoint();
+    let em = exp.midpoint();
+    let mut mid = if bm > 0.0 { bm.powf(em) } else { (lo + hi) * 0.5 };
+    if mid.is_nan() || mid < lo || mid > hi {
+        mid = (lo + hi) * 0.5;
+        if mid.is_nan() {
+            return Interval::new(lo, hi);
+        }
+    }
+    let r1 = hi - mid;
+    let e1 = crate::error::interval::two_sum_err(hi, -mid, r1);
+    let r2 = mid - lo;
+    let e2 = crate::error::interval::two_sum_err(mid, -lo, r2);
+    let r3 = LIBSM_ULP_ALLOWANCE as f64 * half_ulp(mid);
+    let rmax = r1.max(r2).max(r3);
+    let mut emax = 0.0f64;
+    if rmax == r1 {
+        emax = emax.max(e1);
+    }
+    if rmax == r2 {
+        emax = emax.max(e2);
+    }
+    let rad = add_ru_chain(rmax, emax);
+    Interval::from_midpoint_radius(mid, rad)
 }
 
 /// Element-wise power of two arrays (must be broadcast to equal length).
@@ -107,20 +155,42 @@ pub fn rpow_scalar(a: &IntervalArray, base: f64) -> IntervalArray {
 
 // ── Rounding ───────────────────────────────────────────────────────────
 
-pub fn floor_interval(iv: Interval) -> Interval {
-    Interval::new(iv.lo.floor(), iv.hi.floor())
+pub fn floor_interval(iv: Interval, m: f64) -> (f64, f64) {
+    centered_round(m.floor(), iv.lo.floor(), iv.hi.floor())
 }
 
-pub fn ceil_interval(iv: Interval) -> Interval {
-    Interval::new(iv.lo.ceil(), iv.hi.ceil())
+pub fn ceil_interval(iv: Interval, m: f64) -> (f64, f64) {
+    centered_round(m.ceil(), iv.lo.ceil(), iv.hi.ceil())
 }
 
-pub fn trunc_interval(iv: Interval) -> Interval {
-    Interval::new(iv.lo.trunc(), iv.hi.trunc())
+pub fn trunc_interval(iv: Interval, m: f64) -> (f64, f64) {
+    centered_round(m.trunc(), iv.lo.trunc(), iv.hi.trunc())
 }
 
-pub fn round_interval(iv: Interval) -> Interval {
-    Interval::new(iv.lo.round_ties_even(), iv.hi.round_ties_even())
+pub fn round_interval(iv: Interval, m: f64) -> (f64, f64) {
+    centered_round(m.round_ties_even(), iv.lo.round_ties_even(), iv.hi.round_ties_even())
+}
+
+/// Build the stored (mid, rad) pair for an exactly-representable
+/// rounding function: the center is the eval of the input midpoint and
+/// the radius is the outward-rounded distance to the enclosure endpoints.
+fn centered_round(mid: f64, lo_e: f64, hi_e: f64) -> (f64, f64) {
+    if lo_e.is_nan() || hi_e.is_nan() {
+        return (f64::NAN, f64::NAN);
+    }
+    let mut mid = mid;
+    if !mid.is_finite() {
+        mid = (lo_e + hi_e) * 0.5;
+    }
+    if mid < lo_e {
+        mid = lo_e;
+    }
+    if mid > hi_e {
+        mid = hi_e;
+    }
+    let rad = crate::error::interval::sub_ru(mid, lo_e)
+        .max(crate::error::interval::sub_ru(hi_e, mid));
+    (mid, rad)
 }
 
 // ── Clip / sign / nan_to_num ───────────────────────────────────────────
@@ -481,18 +551,17 @@ pub fn max_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
     )
 }
 
-/// Mean along an axis.
+/// Mean along an axis (rigorous: interval division by the axis length).
 pub fn mean_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
     let dim = a.shape()[axis] as f64;
     let s = sum_axis(a, axis);
     let n = s.len();
-    let mids = s.data().midpoints().to_vec();
-    let rads = s.data().radii().to_vec();
     let mut out_mids = vec![0.0f64; n];
     let mut out_rads = vec![0.0f64; n];
     for i in 0..n {
-        out_mids[i] = mids[i] / dim;
-        out_rads[i] = rads[i] / dim;
+        let iv = s.get(i) / dim;
+        out_mids[i] = iv.midpoint();
+        out_rads[i] = iv.radius();
     }
     IntervalArray::from_raw_parts(&out_mids, &out_rads, s.shape())
 }
@@ -547,27 +616,31 @@ pub fn var_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
             let dev = x - mean_iv;
             sum_sq = sum_sq + dev * dev;
         }
-        let m = (sum_sq.midpoint() / dim).max(0.0);
-        let r = sum_sq.radius() / dim;
-        out_mids[out_flat] = m;
-        out_rads[out_flat] = r;
+        let v = sum_sq / dim;
+        let v = if v.lo < 0.0 {
+            Interval::new(0.0, v.hi.max(0.0))
+        } else {
+            v
+        };
+        out_mids[out_flat] = v.midpoint();
+        out_rads[out_flat] = v.radius();
     }
     IntervalArray::from_raw_parts(&out_mids, &out_rads, &out_shape)
 }
 
-/// Population standard deviation along an axis.
+/// Population standard deviation along an axis (rigorous).
 pub fn std_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
     let v = var_axis(a, axis);
     let n = v.len();
-    let mids = v.data().midpoints();
-    let rads = v.data().radii();
     let mut out_mids = vec![0.0f64; n];
     let mut out_rads = vec![0.0f64; n];
     for i in 0..n {
-        let lo = (mids[i] - rads[i]).max(0.0).sqrt();
-        let hi = (mids[i] + rads[i]).max(0.0).sqrt();
-        out_mids[i] = (lo + hi) * 0.5;
-        out_rads[i] = (hi - lo) * 0.5;
+        let iv = v.get(i);
+        let lo = if iv.lo > 0.0 { next_down(iv.lo.sqrt()) } else { 0.0 };
+        let hi = if iv.hi > 0.0 { next_up(iv.hi.sqrt()) } else { 0.0 };
+        let r = Interval::new(lo, hi);
+        out_mids[i] = r.midpoint();
+        out_rads[i] = r.radius();
     }
     IntervalArray::from_raw_parts(&out_mids, &out_rads, v.shape())
 }

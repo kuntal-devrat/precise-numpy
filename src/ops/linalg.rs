@@ -21,7 +21,7 @@ fn get_iv(a: &IntervalArray, i: usize, j: usize) -> Interval {
 
 // ── Determinant (interval LU with partial pivoting) ────────────────────
 
-pub fn det(a: &IntervalArray) -> Result<f64, String> {
+pub fn det(a: &IntervalArray) -> Result<Interval, String> {
     if a.ndim() != 2 {
         return Err("det requires a 2D array".to_string());
     }
@@ -30,7 +30,7 @@ pub fn det(a: &IntervalArray) -> Result<f64, String> {
         return Err("det requires a square matrix".to_string());
     }
     if n == 0 {
-        return Ok(1.0);
+        return Ok(Interval::exact(1.0));
     }
 
     let mut m = vec![Interval::zero(); n * n];
@@ -55,7 +55,7 @@ pub fn det(a: &IntervalArray) -> Result<f64, String> {
             }
         }
         if pivot_mag == 0.0 {
-            return Ok(0.0);
+            return Ok(Interval::exact(0.0));
         }
         if pivot != col {
             for j in 0..n {
@@ -81,8 +81,8 @@ pub fn det(a: &IntervalArray) -> Result<f64, String> {
     }
 
     let d = det_acc.midpoint() * sign;
-    let r = det_acc.radius() * sign.abs();
-    Ok(Interval::from_midpoint_radius(d, r).midpoint())
+    let r = det_acc.radius();
+    Ok(Interval::from_midpoint_radius(d, r))
 }
 
 // ── Solve A x = b via interval Gaussian elimination ────────────────────
@@ -764,7 +764,9 @@ mod tests {
     #[test]
     fn test_det() {
         let m = mat2(1.0, 2.0, 3.0, 4.0);
-        assert!((det(&m).unwrap() - (-2.0)).abs() < 1e-10);
+        let d = det(&m).unwrap();
+        assert!((d.midpoint() - (-2.0)).abs() < 1e-10);
+        assert!(d.contains(-2.0));
     }
 
     #[test]

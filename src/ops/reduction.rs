@@ -1,112 +1,132 @@
 use rayon::prelude::*;
 use crate::array::IntervalArray;
 use crate::error::Interval;
-use crate::simd::vec_ops;
+use crate::error::interval::{next_down, next_up, add_ru_chain, mul_ru};
 
-/// Sum all elements, accumulating error.
-/// Uses SIMD-accelerated sum for both midpoints and radii.
+/// Exact TwoSum rounding error of fl(a + b), computed in round-to-nearest.
+/// Returns e such that a + b = fl(a + b) + e exactly.
+#[inline]
+fn twosum_err(a: f64, b: f64, s: f64) -> f64 {
+    let bv = s - a;
+    let av = s - bv;
+    let br = b - bv;
+    let ar = a - av;
+    ar + br
+}
+
+/// Sum all elements with rigorous error propagation: the radius includes
+/// the rounding error of every partial sum (TwoSum tracking).
 pub fn sum(a: &IntervalArray) -> Interval {
     if a.is_empty() {
         return Interval::zero();
     }
     let mids = a.data().midpoints();
     let rads = a.data().radii();
+    let n = a.len();
 
-    let mid_sum = vec_ops::sum_f64(mids);
-    let rad_sum = vec_ops::sum_f64(rads);
+    // Phase 1 (round-to-nearest): accumulate the midpoint, recording the
+    // exact rounding error of each partial sum.
+    let mut errs = Vec::with_capacity(n);
+    let mut s = 0.0f64;
+    for i in 0..n {
+        let t = s + mids[i];
+        errs.push(twosum_err(s, mids[i], t));
+        s = t;
+    }
 
-    Interval::from_midpoint_radius(mid_sum, rad_sum)
+    // Phase 2: accumulate radii and errors, rounding up each step.
+    let mut rad = 0.0f64;
+    for i in 0..n {
+        rad = add_ru_chain(add_ru_chain(rad, rads[i]), errs[i].abs());
+    }
+
+    Interval::from_midpoint_radius(s, rad)
 }
 
-/// Compute the mean of all elements.
+/// Compute the mean of all elements (rigorous: interval division).
 pub fn mean(a: &IntervalArray) -> Interval {
     if a.is_empty() {
         return Interval::nan();
     }
     let total = sum(a);
-    let n = a.len() as f64;
-    Interval::from_midpoint_radius(total.midpoint() / n, total.radius() / n)
+    total / a.len() as f64
 }
 
-/// Compute the variance of all elements (population variance).
+/// Compute the variance of all elements (population variance), rigorously.
 pub fn var(a: &IntervalArray) -> Interval {
     if a.is_empty() {
         return Interval::nan();
     }
     let n = a.len() as f64;
-    let mids = a.data().midpoints();
-    let rads = a.data().radii();
-
     let mean_iv = mean(a);
-    let mean_mid = mean_iv.midpoint();
 
-    let mut sum_sq_dev_mid = 0.0f64;
-    let mut sum_sq_dev_rad = 0.0f64;
-
+    let mut sum_iv = Interval::zero();
     for i in 0..a.len() {
-        let dev_mid = mids[i] - mean_mid;
-        let dev_rad = rads[i] + mean_iv.radius();
-
-        let sq_mid = dev_mid * dev_mid;
-        let sq_rad = 2.0 * dev_mid.abs() * dev_rad + dev_rad * dev_rad;
-
-        sum_sq_dev_mid += sq_mid;
-        sum_sq_dev_rad += sq_rad;
+        let xi = a.get(i);
+        let dev = xi - mean_iv;
+        let sq = dev * dev;
+        sum_iv = sum_iv + sq;
     }
 
-    let var_mid = (sum_sq_dev_mid / n).max(0.0);
-    let var_rad = sum_sq_dev_rad / n;
-
-    Interval::from_midpoint_radius(var_mid, var_rad)
+    let v = sum_iv / n;
+    // The squared deviation set is non-negative; clamp the lower bound.
+    if v.lo < 0.0 {
+        Interval::new(0.0, v.hi.max(0.0))
+    } else {
+        v
+    }
 }
 
-/// Compute the standard deviation (population).
+/// Compute the standard deviation (population), rigorously.
 pub fn std_dev(a: &IntervalArray) -> Interval {
     let v = var(a);
-    let lo = if v.lo > 0.0 { v.lo } else { 0.0 };
-    let hi = if v.hi > 0.0 { v.hi } else { 0.0 };
-    Interval::new(lo.sqrt(), hi.sqrt())
+    if v.lo.is_nan() {
+        return v;
+    }
+    let lo = if v.lo > 0.0 { next_down(v.lo.sqrt()) } else { 0.0 };
+    let hi = if v.hi > 0.0 { next_up(v.hi.sqrt()) } else { 0.0 };
+    Interval::new(lo, hi)
 }
 
-/// Find the minimum element.
+/// Find the minimum element (rigorous hull over the element sets).
 pub fn min(a: &IntervalArray) -> Interval {
     let n = a.len();
     assert!(n > 0, "min of empty array");
 
-    let mids = a.data().midpoints();
-    let rads = a.data().radii();
-
     let mut min_lo = f64::INFINITY;
     let mut min_hi = f64::INFINITY;
     for i in 0..n {
-        let lo = mids[i] - rads[i];
-        let hi = mids[i] + rads[i];
-        if lo < min_lo { min_lo = lo; }
-        if hi < min_hi { min_hi = hi; }
+        let iv = a.get(i);
+        if iv.lo < min_lo {
+            min_lo = iv.lo;
+        }
+        if iv.hi < min_hi {
+            min_hi = iv.hi;
+        }
     }
     Interval::new(min_lo, min_hi)
 }
 
-/// Find the maximum element.
+/// Find the maximum element (rigorous hull over the element sets).
 pub fn max(a: &IntervalArray) -> Interval {
     let n = a.len();
     assert!(n > 0, "max of empty array");
 
-    let mids = a.data().midpoints();
-    let rads = a.data().radii();
-
     let mut max_lo = f64::NEG_INFINITY;
     let mut max_hi = f64::NEG_INFINITY;
     for i in 0..n {
-        let lo = mids[i] - rads[i];
-        let hi = mids[i] + rads[i];
-        if lo > max_lo { max_lo = lo; }
-        if hi > max_hi { max_hi = hi; }
+        let iv = a.get(i);
+        if iv.lo > max_lo {
+            max_lo = iv.lo;
+        }
+        if iv.hi > max_hi {
+            max_hi = iv.hi;
+        }
     }
     Interval::new(max_lo, max_hi)
 }
 
-/// Dot product of two 1D arrays.
+/// Dot product of two 1D arrays with rigorous error propagation.
 pub fn dot(a: &IntervalArray, b: &IntervalArray) -> Interval {
     assert_eq!(a.len(), b.len(), "dot: length mismatch");
     let n = a.len();
@@ -118,19 +138,43 @@ pub fn dot(a: &IntervalArray, b: &IntervalArray) -> Interval {
     let (a_mids, a_rads) = (a.data().midpoints(), a.data().radii());
     let (b_mids, b_rads) = (b.data().midpoints(), b.data().radii());
 
-    let mid_sum = vec_ops::dot_f64(a_mids, b_mids);
-
-    let mut rad_sum = 0.0f64;
+    // Phase 1 (RTN): products and TwoSum accumulation with exact errors.
+    let mut errs = Vec::with_capacity(2 * n);
+    let mut s = 0.0f64;
     for i in 0..n {
-        rad_sum += a_mids[i].abs() * b_rads[i]
-                 + b_mids[i].abs() * a_rads[i]
-                 + a_rads[i] * b_rads[i];
+        let p = a_mids[i] * b_mids[i];
+        errs.push(if p.is_finite() {
+            a_mids[i].mul_add(b_mids[i], -p).abs()
+        } else {
+            f64::INFINITY
+        });
+        let t = s + p;
+        errs.push(twosum_err(s, p, t));
+        s = t;
     }
 
-    Interval::from_midpoint_radius(mid_sum, rad_sum)
+    // Phase 2: accumulate all radius contributions, rounding up each step.
+    let mut rad = 0.0f64;
+    for i in 0..n {
+        rad = add_ru_chain(
+            add_ru_chain(
+                add_ru_chain(
+                    add_ru_chain(
+                        rad,
+                        mul_ru(a_mids[i].abs(), b_rads[i]),
+                    ),
+                    mul_ru(b_mids[i].abs(), a_rads[i]),
+                ),
+                mul_ru(a_rads[i], b_rads[i]),
+            ),
+                    add_ru_chain(errs[2 * i], errs[2 * i + 1].abs()),
+        );
+    }
+
+    Interval::from_midpoint_radius(s, rad)
 }
 
-/// Cumulative sum along the array.
+/// Cumulative sum along the array with rigorous error propagation.
 pub fn cumsum(a: &IntervalArray) -> IntervalArray {
     let n = a.len();
     let mids = a.data().midpoints();
@@ -139,12 +183,20 @@ pub fn cumsum(a: &IntervalArray) -> IntervalArray {
     let mut out_mids = vec![0.0f64; n];
     let mut out_rads = vec![0.0f64; n];
 
+    // Phase 1 (RTN): cumulative midpoints with exact per-step errors.
+    let mut errs = vec![0.0f64; n];
     let mut cum_mid = 0.0f64;
+    for i in 0..n {
+        let t = cum_mid + mids[i];
+        errs[i] = twosum_err(cum_mid, mids[i], t);
+        cum_mid = t;
+        out_mids[i] = cum_mid;
+    }
+
+    // Phase 2: cumulative radii, rounding up each step.
     let mut cum_rad = 0.0f64;
     for i in 0..n {
-        cum_mid += mids[i];
-        cum_rad += rads[i];
-        out_mids[i] = cum_mid;
+        cum_rad = add_ru_chain(add_ru_chain(cum_rad, rads[i]), errs[i].abs());
         out_rads[i] = cum_rad;
     }
 
@@ -189,36 +241,17 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let mut r_mids = vec![0.0f64; m * n];
     let mut r_rads = vec![0.0f64; m * n];
 
-    let a_is_exact = a.is_exact();
-    let b_is_exact = b.is_exact();
-
-    // Precompute absolute value matrices if needed for radii propagation
-    let abs_a_mids: Vec<f64> = if !b_is_exact {
-        a_mids.iter().map(|&x| x.abs()).collect()
-    } else {
-        vec![]
-    };
-
-    let abs_b_plus_rad: Vec<f64> = if !a_is_exact {
-        b_mids.iter().zip(b_rads.iter()).map(|(&bm, &br)| bm.abs() + br).collect()
-    } else {
-        vec![]
-    };
-
     // Use parallel row-block decomposition only for larger matrices (M >= 256)
     if m >= 256 {
         let row_chunk_size = 64;
         r_mids.par_chunks_mut(row_chunk_size * n)
-            .zip(r_rads.par_chunks_mut(row_chunk_size * n))
             .enumerate()
-            .for_each(|(chunk_idx, (m_chunk, r_chunk))| {
+            .for_each(|(chunk_idx, m_chunk)| {
                 let row_start = chunk_idx * row_chunk_size;
                 let current_m = m_chunk.len() / n;
 
                 let a_mid_ptr = unsafe { a_mids.as_ptr().add(row_start * k) };
-                let a_rad_ptr = unsafe { a_rads.as_ptr().add(row_start * k) };
 
-                // 1. C_mid = A_mid * B_mid
                 unsafe {
                     matrixmultiply::dgemm(
                         current_m, k, n,
@@ -229,38 +262,8 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
                         m_chunk.as_mut_ptr(), n as isize, 1,
                     );
                 }
-
-                // 2. C_rad = |A_mid| * B_rad + A_rad * (|B_mid| + B_rad)
-                if !b_is_exact {
-                    let abs_a_ptr = unsafe { abs_a_mids.as_ptr().add(row_start * k) };
-                    unsafe {
-                        matrixmultiply::dgemm(
-                            current_m, k, n,
-                            1.0,
-                            abs_a_ptr, k as isize, 1,
-                            b_rads.as_ptr(), n as isize, 1,
-                            0.0,
-                            r_chunk.as_mut_ptr(), n as isize, 1,
-                        );
-                    }
-                }
-
-                if !a_is_exact {
-                    let beta = if !b_is_exact { 1.0 } else { 0.0 };
-                    unsafe {
-                        matrixmultiply::dgemm(
-                            current_m, k, n,
-                            1.0,
-                            a_rad_ptr, k as isize, 1,
-                            abs_b_plus_rad.as_ptr(), n as isize, 1,
-                            beta,
-                            r_chunk.as_mut_ptr(), n as isize, 1,
-                        );
-                    }
-                }
             });
     } else {
-        // Single-threaded fast path to avoid Rayon thread scheduling overhead for small/medium matrices
         unsafe {
             matrixmultiply::dgemm(
                 m, k, n,
@@ -271,59 +274,74 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
                 r_mids.as_mut_ptr(), n as isize, 1,
             );
         }
+    }
 
-        if !b_is_exact {
-            unsafe {
-                matrixmultiply::dgemm(
-                    m, k, n,
-                    1.0,
-                    abs_a_mids.as_ptr(), k as isize, 1,
-                    b_rads.as_ptr(), n as isize, 1,
-                    0.0,
-                    r_rads.as_mut_ptr(), n as isize, 1,
+    // Rigorous radius pass: for every output element recompute the dot
+    // product with TwoSum error tracking (the dgemm midpoint is only used
+    // as the center; the radius encloses every rounding along the chain).
+    for i in 0..m {
+        let a_row = i * k;
+        for j in 0..n {
+            // Phase 1 (RTN): exact per-step errors of products and partial sums.
+            let mut errs = Vec::with_capacity(2 * k);
+            let mut s = 0.0f64;
+            for t in 0..k {
+                let am = a_mids[a_row + t];
+                let bm = b_mids[t * n + j];
+                let p = am * bm;
+                errs.push(if p.is_finite() {
+                    am.mul_add(bm, -p).abs()
+                } else {
+                    f64::INFINITY
+                });
+                let nt = s + p;
+                errs.push(twosum_err(s, p, nt));
+                s = nt;
+            }
+            // Phase 2 (round-up): radius accumulation.
+            let mut rad = 0.0f64;
+            for t in 0..k {
+                let am = a_mids[a_row + t];
+                let ar = a_rads[a_row + t];
+                let bm = b_mids[t * n + j];
+                let br = b_rads[t * n + j];
+                rad = add_ru_chain(
+                    add_ru_chain(
+                        add_ru_chain(
+                            add_ru_chain(
+                                rad,
+                                mul_ru(am.abs(), br),
+                            ),
+                            mul_ru(bm.abs(), ar),
+                        ),
+                        mul_ru(ar, br),
+                    ),
+                    add_ru_chain(errs[2 * t], errs[2 * t + 1].abs()),
                 );
             }
-        }
-
-        if !a_is_exact {
-            let beta = if !b_is_exact { 1.0 } else { 0.0 };
-            unsafe {
-                matrixmultiply::dgemm(
-                    m, k, n,
-                    1.0,
-                    a_rads.as_ptr(), k as isize, 1,
-                    abs_b_plus_rad.as_ptr(), n as isize, 1,
-                    beta,
-                    r_rads.as_mut_ptr(), n as isize, 1,
-                );
-            }
+            r_rads[i * n + j] = rad;
         }
     }
 
     IntervalArray::from_raw_parts(&r_mids, &r_rads, &[m, n])
 }
 
-/// L2 norm: sqrt(sum(x^2)), fused without intermediate array.
+/// L2 norm: sqrt(sum(x^2)), computed rigorously in interval space.
 pub fn norm_l2(a: &IntervalArray) -> Interval {
     if a.is_empty() {
         return Interval::zero();
     }
-    let mids = a.data().midpoints();
-    let rads = a.data().radii();
 
-    let mut sum_sq_mid = 0.0f64;
-    let mut sum_sq_rad = 0.0f64;
+    let mut sum_sq = Interval::zero();
     for i in 0..a.len() {
-        let m = mids[i];
-        let r = rads[i];
-        sum_sq_mid += m * m;
-        sum_sq_rad += 2.0 * m.abs() * r + r * r;
+        let xi = a.get(i);
+        let sq = xi * xi;
+        sum_sq = sum_sq + sq;
     }
 
-    let sum_iv = Interval::from_midpoint_radius(sum_sq_mid, sum_sq_rad);
-    let lo = if sum_iv.lo > 0.0 { sum_iv.lo } else { 0.0 };
-    let hi = if sum_iv.hi > 0.0 { sum_iv.hi } else { 0.0 };
-    Interval::new(lo.sqrt(), hi.sqrt())
+    let lo = if sum_sq.lo > 0.0 { next_down(sum_sq.lo.sqrt()) } else { 0.0 };
+    let hi = if sum_sq.hi > 0.0 { next_up(sum_sq.hi.sqrt()) } else { 0.0 };
+    Interval::new(lo, hi)
 }
 
 /// Result of a generalized dot/matmul: either a scalar interval (1D·1D) or

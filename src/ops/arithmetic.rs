@@ -3,7 +3,8 @@ use crate::array::IntervalArray;
 use crate::error::Interval;
 use crate::simd::vec_ops;
 
-/// SIMD & parallel-accelerated single-pass interval addition.
+/// SIMD & parallel-accelerated interval addition with rigorous error
+/// propagation: the radius includes the rounding error of the midpoint sum.
 pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.len(), b.len(), "array lengths must match for add");
     assert_eq!(a.shape(), b.shape(), "shapes must match for add");
@@ -15,26 +16,6 @@ pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let (b_mids, b_rads) = (b.data().midpoints(), b.data().radii());
     let (r_mids, r_rads) = result.data_mut().as_mut_slices();
 
-    // Exact array fast path: if both arrays have zero error, radii remain zero!
-    if a.is_exact() && b.is_exact() {
-        vec_ops::add_f64(a_mids, b_mids, r_mids);
-        return result;
-    }
-
-    // Exact b fast path: radius is unchanged!
-    if b.is_exact() {
-        vec_ops::add_f64(a_mids, b_mids, r_mids);
-        r_rads.copy_from_slice(a_rads);
-        return result;
-    }
-
-    // Exact a fast path: radius is unchanged!
-    if a.is_exact() {
-        vec_ops::add_f64(a_mids, b_mids, r_mids);
-        r_rads.copy_from_slice(b_rads);
-        return result;
-    }
-
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
         r_mids.par_chunks_mut(CHUNK)
@@ -43,7 +24,7 @@ pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
             .for_each(|(chunk_idx, (rm, rr))| {
                 let start = chunk_idx * CHUNK;
                 let end = start + rm.len();
-                vec_ops::add_intervals_stream(
+                vec_ops::add_intervals_rigorous(
                     &a_mids[start..end],
                     &a_rads[start..end],
                     &b_mids[start..end],
@@ -53,13 +34,14 @@ pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
                 );
             });
     } else {
-        vec_ops::add_intervals_stream(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+        vec_ops::add_intervals_rigorous(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
     }
 
     result
 }
 
-/// SIMD & parallel-accelerated single-pass interval subtraction.
+/// SIMD & parallel-accelerated interval subtraction with rigorous error
+/// propagation: the radius includes the rounding error of the midpoint diff.
 pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.len(), b.len(), "array lengths must match for sub");
     assert_eq!(a.shape(), b.shape(), "shapes must match for sub");
@@ -71,26 +53,6 @@ pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let (b_mids, b_rads) = (b.data().midpoints(), b.data().radii());
     let (r_mids, r_rads) = result.data_mut().as_mut_slices();
 
-    // Exact array fast path
-    if a.is_exact() && b.is_exact() {
-        vec_ops::sub_f64(a_mids, b_mids, r_mids);
-        return result;
-    }
-
-    // Exact b fast path: radius is unchanged!
-    if b.is_exact() {
-        vec_ops::sub_f64(a_mids, b_mids, r_mids);
-        r_rads.copy_from_slice(a_rads);
-        return result;
-    }
-
-    // Exact a fast path: radius is unchanged!
-    if a.is_exact() {
-        vec_ops::sub_f64(a_mids, b_mids, r_mids);
-        r_rads.copy_from_slice(b_rads);
-        return result;
-    }
-
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
         r_mids.par_chunks_mut(CHUNK)
@@ -99,7 +61,7 @@ pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
             .for_each(|(chunk_idx, (rm, rr))| {
                 let start = chunk_idx * CHUNK;
                 let end = start + rm.len();
-                vec_ops::sub_intervals_stream(
+                vec_ops::sub_intervals_rigorous(
                     &a_mids[start..end],
                     &a_rads[start..end],
                     &b_mids[start..end],
@@ -109,17 +71,15 @@ pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
                 );
             });
     } else {
-        vec_ops::sub_intervals_stream(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+        vec_ops::sub_intervals_rigorous(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
     }
 
     result
 }
 
-/// SIMD & parallel-accelerated single-pass streaming interval multiplication.
-///
-/// Uses `mul_intervals_stream` super-instruction:
-/// Computes both midpoints and radii in SIMD vector registers in a SINGLE pass.
-/// ZERO auxiliary memory allocations!
+/// SIMD & parallel-accelerated interval multiplication with rigorous error
+/// propagation: the radius includes the rounding error of the midpoint
+/// product.
 pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.len(), b.len(), "array lengths must match for mul");
     assert_eq!(a.shape(), b.shape(), "shapes must match for mul");
@@ -131,26 +91,6 @@ pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let (b_mids, b_rads) = (b.data().midpoints(), b.data().radii());
     let (r_mids, r_rads) = result.data_mut().as_mut_slices();
 
-    // Exact array fast path: if both arrays are exact, radii remain zero!
-    if a.is_exact() && b.is_exact() {
-        vec_ops::mul_f64(a_mids, b_mids, r_mids);
-        return result;
-    }
-
-    // Exact b fast path: radius = |b_mid| * a_rad
-    if b.is_exact() {
-        vec_ops::mul_f64(a_mids, b_mids, r_mids);
-        vec_ops::abs_mul_f64(b_mids, a_rads, r_rads);
-        return result;
-    }
-
-    // Exact a fast path: radius = |a_mid| * b_rad
-    if a.is_exact() {
-        vec_ops::mul_f64(a_mids, b_mids, r_mids);
-        vec_ops::abs_mul_f64(a_mids, b_rads, r_rads);
-        return result;
-    }
-
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
         r_mids.par_chunks_mut(CHUNK)
@@ -159,7 +99,7 @@ pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
             .for_each(|(chunk_idx, (rm, rr))| {
                 let start = chunk_idx * CHUNK;
                 let end = start + rm.len();
-                vec_ops::mul_intervals_stream(
+                vec_ops::mul_intervals_rigorous(
                     &a_mids[start..end],
                     &a_rads[start..end],
                     &b_mids[start..end],
@@ -169,13 +109,15 @@ pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
                 );
             });
     } else {
-        vec_ops::mul_intervals_stream(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+        vec_ops::mul_intervals_rigorous(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
     }
 
     result
 }
 
-/// SIMD & parallel-accelerated interval division.
+/// SIMD & parallel-accelerated interval division with rigorous error
+/// propagation. Divisors whose interval contains zero fall back to the
+/// full interval division (result becomes the entire real line).
 pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.len(), b.len(), "array lengths must match for div");
     assert_eq!(a.shape(), b.shape(), "shapes must match for div");
@@ -196,42 +138,6 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
         }
     }
 
-    // Exact array fast path: if both arrays have zero error, radii remain zero!
-    if a.is_exact() && b.is_exact() && !has_zero_crossing {
-        vec_ops::div_f64(a_mids, b_mids, r_mids);
-        return result;
-    }
-
-    // Exact b fast path: c_rad = a_rad / |b_mid|
-    if b.is_exact() {
-        let mut has_zero = false;
-        for i in 0..n {
-            if b_mids[i] == 0.0 {
-                has_zero = true;
-                break;
-            }
-        }
-        if !has_zero {
-            vec_ops::div_f64(a_mids, b_mids, r_mids);
-            let abs_b: Vec<f64> = b_mids.iter().map(|&x| x.abs()).collect();
-            vec_ops::div_f64(a_rads, &abs_b, r_rads);
-            return result;
-        }
-    }
-
-    // Exact a fast path: c_rad = |a_mid| * b_rad / |b_mid^2 - b_rad^2|
-    if a.is_exact() && !has_zero_crossing {
-        vec_ops::div_f64(a_mids, b_mids, r_mids);
-        for i in 0..n {
-            let am = a_mids[i];
-            let bm = b_mids[i];
-            let br = b_rads[i];
-            let denom = (bm * bm - br * br).abs();
-            r_rads[i] = (am.abs() * br) / denom;
-        }
-        return result;
-    }
-
     if has_zero_crossing {
         for i in 0..n {
             let a_iv = Interval::from_midpoint_radius(a_mids[i], a_rads[i]);
@@ -240,20 +146,25 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
             r_mids[i] = r.midpoint();
             r_rads[i] = r.radius();
         }
+    } else if n >= vec_ops::PAR_THRESHOLD {
+        const CHUNK: usize = 8192;
+        r_mids.par_chunks_mut(CHUNK)
+            .zip(r_rads.par_chunks_mut(CHUNK))
+            .enumerate()
+            .for_each(|(chunk_idx, (rm, rr))| {
+                let start = chunk_idx * CHUNK;
+                let end = start + rm.len();
+                vec_ops::div_intervals_rigorous(
+                    &a_mids[start..end],
+                    &a_rads[start..end],
+                    &b_mids[start..end],
+                    &b_rads[start..end],
+                    rm,
+                    rr,
+                );
+            });
     } else {
-        // Fast SIMD path: mid = a.mid / b.mid
-        vec_ops::div_f64(a_mids, b_mids, r_mids);
-
-        // Numerator & denominator via streaming ops
-        for i in 0..n {
-            let am = a_mids[i];
-            let ar = a_rads[i];
-            let bm = b_mids[i];
-            let br = b_rads[i];
-            let denom = (bm * bm - br * br).abs();
-            let numer = am.abs() * br + bm.abs() * ar + ar * br;
-            r_rads[i] = numer / denom;
-        }
+        vec_ops::div_intervals_rigorous(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
     }
 
     result
@@ -271,7 +182,7 @@ pub fn neg_array(a: &IntervalArray) -> IntervalArray {
     result
 }
 
-/// Add a scalar interval to every element using scalar-broadcast SIMD.
+/// Add a scalar interval to every element with rigorous error propagation.
 pub fn add_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
     let mut result = IntervalArray::zeros(a.shape());
 
@@ -280,14 +191,32 @@ pub fn add_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
 
     let s_mid = s.midpoint();
     let s_rad = s.radius();
+    let n = a.len();
 
-    vec_ops::add_scalar_f64(a_mids, s_mid, r_mids);
-    vec_ops::add_scalar_f64(a_rads, s_rad, r_rads);
+    let mut errs = vec![0.0f64; n];
+    for i in 0..n {
+        let am = a_mids[i];
+        let sm = s_mid;
+        let t = am + sm;
+        let bv = t - am;
+        let av = t - bv;
+        let br = sm - bv;
+        let ar = am - av;
+        r_mids[i] = t;
+        errs[i] = ar + br;
+    }
+    for i in 0..n {
+        r_rads[i] = crate::error::interval::add_ru_chain(
+            crate::error::interval::add_ru_chain(a_rads[i], s_rad),
+            errs[i].abs(),
+        );
+    }
 
     result
 }
 
-/// Multiply every element by a scalar interval using SIMD streaming super-instruction.
+/// Multiply every element by a scalar interval with rigorous error
+/// propagation.
 pub fn mul_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
     let mut result = IntervalArray::zeros(a.shape());
 
@@ -296,23 +225,37 @@ pub fn mul_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
 
     let s_mid = s.midpoint();
     let s_rad = s.radius();
+    let n = a.len();
 
-    vec_ops::mul_scalar_stream(a_mids, a_rads, s_mid, s_rad, r_mids, r_rads);
+    let mut errs = vec![0.0f64; n];
+    for i in 0..n {
+        let t = a_mids[i] * s_mid;
+        r_mids[i] = t;
+        errs[i] = if t.is_finite() {
+            a_mids[i].mul_add(s_mid, -t).abs()
+        } else {
+            f64::INFINITY
+        };
+    }
+    for i in 0..n {
+        r_rads[i] = crate::error::interval::add_ru_chain(
+            crate::error::interval::add_ru_chain(
+                crate::error::interval::mul_ru(a_mids[i].abs(), s_rad),
+                crate::error::interval::mul_ru(a_rads[i], s_mid.abs()),
+            ),
+            crate::error::interval::add_ru_chain(
+                crate::error::interval::mul_ru(a_rads[i], s_rad),
+                errs[i],
+            ),
+        );
+    }
 
     result
 }
 
-/// Scale all elements by an exact scalar.
+/// Scale all elements by an exact scalar (rigorous).
 pub fn scale_array(a: &IntervalArray, scalar: f64) -> IntervalArray {
-    let mut result = IntervalArray::zeros(a.shape());
-
-    let (a_mids, a_rads) = (a.data().midpoints(), a.data().radii());
-    let (r_mids, r_rads) = result.data_mut().as_mut_slices();
-
-    vec_ops::scale_f64(a_mids, scalar, r_mids);
-    vec_ops::scale_f64(a_rads, scalar.abs(), r_rads);
-
-    result
+    mul_scalar(a, Interval::exact(scalar))
 }
 
 #[cfg(test)]
