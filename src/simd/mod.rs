@@ -285,7 +285,6 @@ pub mod vec_ops {
         r_rads: &mut [f64],
     ) {
         let n = a_mids.len();
-        let mut errs = vec![0.0f64; n];
         for i in 0..n {
             let am = a_mids[i];
             let bm = b_mids[i];
@@ -294,13 +293,11 @@ pub mod vec_ops {
             let av = s - bv;
             let br = bm - bv;
             let ar = am - av;
+            let err = ar + br;
             r_mids[i] = s;
-            errs[i] = ar + br;
-        }
-        for i in 0..n {
             r_rads[i] = crate::error::interval::add_ru_chain(
                 crate::error::interval::add_ru_chain(a_rads[i], b_rads[i]),
-                errs[i].abs(),
+                err.abs(),
             );
         }
     }
@@ -316,7 +313,6 @@ pub mod vec_ops {
         r_rads: &mut [f64],
     ) {
         let n = a_mids.len();
-        let mut errs = vec![0.0f64; n];
         for i in 0..n {
             let am = a_mids[i];
             let bm = b_mids[i];
@@ -325,13 +321,11 @@ pub mod vec_ops {
             let av = s - bv;
             let br = bm - bv;
             let ar = am - av;
+            let err = ar + br;
             r_mids[i] = s;
-            errs[i] = ar + br;
-        }
-        for i in 0..n {
             r_rads[i] = crate::error::interval::add_ru_chain(
                 crate::error::interval::add_ru_chain(a_rads[i], b_rads[i]),
-                errs[i].abs(),
+                err.abs(),
             );
         }
     }
@@ -348,27 +342,24 @@ pub mod vec_ops {
         r_rads: &mut [f64],
     ) {
         let n = a_mids.len();
-        let mut errs = vec![0.0f64; n];
         for i in 0..n {
             let am = a_mids[i];
             let bm = b_mids[i];
             let s = am * bm;
-            r_mids[i] = s;
-            if s.is_finite() {
-                errs[i] = am.mul_add(bm, -s).abs();
+            let err = if s.is_finite() {
+                am.mul_add(bm, -s).abs()
             } else {
-                errs[i] = f64::INFINITY;
-            }
-        }
-        for i in 0..n {
+                f64::INFINITY
+            };
+            r_mids[i] = s;
             r_rads[i] = crate::error::interval::add_ru_chain(
                 crate::error::interval::add_ru_chain(
-                    crate::error::interval::mul_ru(a_mids[i].abs(), b_rads[i]),
-                    crate::error::interval::mul_ru(b_mids[i].abs(), a_rads[i]),
+                    crate::error::interval::mul_ru(am.abs(), b_rads[i]),
+                    crate::error::interval::mul_ru(bm.abs(), a_rads[i]),
                 ),
                 crate::error::interval::add_ru_chain(
                     crate::error::interval::mul_ru(a_rads[i], b_rads[i]),
-                    errs[i],
+                    err,
                 ),
             );
         }
@@ -390,11 +381,6 @@ pub mod vec_ops {
         for i in 0..n {
             r_mids[i] = a_mids[i] / b_mids[i];
         }
-        let mut nums = vec![0.0f64; n];
-        let mut dens = vec![0.0f64; n];
-        for i in 0..n {
-            dens[i] = crate::error::interval::sub_rd(b_mids[i].abs(), b_rads[i]);
-        }
         for i in 0..n {
             let bm = b_mids[i];
             let s = r_mids[i];
@@ -403,19 +389,15 @@ pub mod vec_ops {
             } else {
                 f64::INFINITY
             };
-            nums[i] = crate::error::interval::add_ru_chain(
-                crate::error::interval::add_ru_chain(
-                    a_rads[i],
-                    exact_err,
-                ),
+            let nums = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(a_rads[i], exact_err),
                 crate::error::interval::mul_ru(s.abs(), b_rads[i]),
             );
-        }
-        for i in 0..n {
-            if dens[i] <= 0.0 {
+            let dens = crate::error::interval::sub_rd(bm.abs(), b_rads[i]);
+            if dens <= 0.0 {
                 r_rads[i] = f64::INFINITY;
             } else {
-                r_rads[i] = crate::error::interval::div_ru(nums[i], dens[i]);
+                r_rads[i] = crate::error::interval::div_ru(nums, dens);
             }
         }
     }

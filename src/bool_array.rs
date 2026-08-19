@@ -10,7 +10,7 @@ use pyo3::types::PySlice;
 use pyo3::Bound;
 
 /// A NumPy-style boolean array (mask).
-#[pyclass(name = "BoolArray", frozen)]
+#[pyclass(name = "BoolArray", module = "precise_numpy._precise_numpy")]
 pub struct PyBoolArray {
     pub(crate) inner: Arc<Vec<bool>>,
 }
@@ -223,5 +223,19 @@ impl PyBoolArray {
 
     fn __ne__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         Ok(!self.__eq__(other)?)
+    }
+
+    fn __getstate__(&self) -> Vec<bool> {
+        self.inner.as_ref().clone()
+    }
+
+    fn __setstate__(&mut self, state: Vec<bool>) {
+        self.inner = Arc::new(state);
+    }
+
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(PyObject, (Vec<bool>,))> {
+        let module = pyo3::types::PyModule::import_bound(py, "precise_numpy._precise_numpy")?;
+        let cls = module.getattr("BoolArray")?;
+        Ok((cls.into_any().unbind(), (self.to_vec(),)))
     }
 }

@@ -171,6 +171,29 @@ pub fn round_interval(iv: Interval, m: f64) -> (f64, f64) {
     centered_round(m.round_ties_even(), iv.lo.round_ties_even(), iv.hi.round_ties_even())
 }
 
+/// Round an interval to a fixed number of decimals (numpy `round(ndigits)`).
+///
+/// Round-half-even is non-decreasing, so the hull of the endpoint
+/// roundings contains every rounded value in the interval; each endpoint
+/// is additionally expanded by one ulp to cover the rounding error of the
+/// scale multiply/divide. ndigits with |ndigits| >= 309 leaves the
+/// interval unchanged (numpy returns the input unchanged for such
+/// ndigits).
+pub fn round_ndigits_interval(iv: Interval, m: f64, ndigits: i32) -> (f64, f64) {
+    let scale = 10f64.powi(ndigits);
+    if !scale.is_finite() || scale == 0.0 {
+        return (m, iv.radius());
+    }
+    let lo_e = next_down_n((iv.lo * scale).round_ties_even() / scale, 1);
+    let hi_e = next_up_n((iv.hi * scale).round_ties_even() / scale, 1);
+    let mid = if m.is_finite() {
+        (m * scale).round_ties_even() / scale
+    } else {
+        m
+    };
+    centered_round(mid, lo_e, hi_e)
+}
+
 /// Build the stored (mid, rad) pair for an exactly-representable
 /// rounding function: the center is the eval of the input midpoint and
 /// the radius is the outward-rounded distance to the enclosure endpoints.

@@ -22,7 +22,7 @@ use ops::{arithmetic, broadcast, compare, extra, linalg, math, random, reduction
 // ══════════════════════════════════════════════════════════════════════
 
 /// A NumPy-compatible interval array with guaranteed numerical error bounds.
-#[pyclass(name = "IntervalArray")]
+#[pyclass(name = "IntervalArray", module = "precise_numpy._precise_numpy")]
 struct PyIntervalArray {
     inner: IntervalArray,
 }
@@ -87,16 +87,7 @@ fn mul_dispatch(a: &IntervalArray, b: &IntervalArray) -> PyResult<IntervalArray>
 /// interval contains zero (caller is expected to emit a warning).
 fn div_dispatch(a: &IntervalArray, b: &IntervalArray) -> PyResult<(IntervalArray, bool)> {
     let (ba, bb) = broadcast_for_op(a, b)?;
-    let b_mids = bb.data().midpoints();
-    let b_rads = bb.data().radii();
-    let mut warn = false;
-    for i in 0..bb.len() {
-        if b_mids[i] - b_rads[i] <= 0.0 && b_mids[i] + b_rads[i] >= 0.0 {
-            warn = true;
-            break;
-        }
-    }
-    Ok((arithmetic::div_arrays(&ba, &bb), warn))
+    Ok(arithmetic::div_arrays(&ba, &bb))
 }
 
 fn pow_dispatch(a: &IntervalArray, b: &IntervalArray) -> PyResult<IntervalArray> {
@@ -228,11 +219,30 @@ fn resolve_slice(
     Ok(out)
 }
 
+enum IndexComp {
+    /// Selection along the next original axis (in positional order).
+    Axis { idxs: Vec<usize>, is_int: bool },
+    /// A new axis of length 1 inserted at this position (`None`).
+    NewAxis,
+}
+
 struct ParsedIndex {
-    /// Per-axis resolved positions (padded to `ndim` with full slices).
-    axis_idx: Vec<Vec<usize>>,
-    /// Whether each axis was indexed by a plain integer.
-    is_int: Vec<bool>,
+    /// Index components in positional order.
+    comps: Vec<IndexComp>,
+}
+
+impl ParsedIndex {
+    /// The Axis components in order (their position within the Vec is the
+    /// ordinal of the original axis they index).
+    fn axis_comps(&self) -> impl Iterator<Item = &IndexComp> {
+        self.comps.iter().filter(|c| matches!(c, IndexComp::Axis { .. }))
+    }
+
+    fn scalar(&self) -> bool {
+        self.comps.iter().all(|c| {
+            matches!(c, IndexComp::Axis { is_int: true, .. })
+        })
+    }
 }
 
 fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<ParsedIndex> {
@@ -244,22 +254,49 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
         for i in 0..tup.len() {
             specs.push(tup.get_item(i)?);
         }
-        if specs.len() > ndim {
-            return Err(PyIndexError::new_err(format!(
-                "too many indices for array: array is {}-dimensional, but {} were indexed",
-                ndim,
-                specs.len()
-            )));
-        }
     } else {
         specs.push(index.clone());
     }
 
-    let mut axis_idx: Vec<Vec<usize>> = Vec::new();
-    let mut is_int: Vec<bool> = Vec::new();
+    let mut num_real = 0usize;
+    let mut num_ellipsis = 0usize;
+    for spec in specs.iter() {
+        if spec.is_none() {
+            // no axis consumed
+        } else if spec.is_ellipsis() {
+            num_ellipsis += 1;
+        } else {
+            num_real += 1;
+        }
+    }
+    if num_ellipsis > 1 {
+        return Err(PyIndexError::new_err(
+            "an index can only have a single ellipsis ('...')",
+        ));
+    }
+    if num_real > ndim {
+        return Err(PyIndexError::new_err(format!(
+            "too many indices for array: array is {}-dimensional, but {} were indexed",
+            ndim, num_real
+        )));
+    }
+    let fill = ndim - num_real;
 
-    for (k, spec) in specs.iter().enumerate() {
-        if let Ok(i) = spec.extract::<isize>() {
+    let mut comps: Vec<IndexComp> = Vec::new();
+    let mut k = 0usize;
+
+    for spec in specs.iter() {
+        if spec.is_none() {
+            comps.push(IndexComp::NewAxis);
+        } else if spec.is_ellipsis() {
+            for _ in 0..fill {
+                comps.push(IndexComp::Axis {
+                    idxs: (0..shape[k]).collect(),
+                    is_int: false,
+                });
+                k += 1;
+            }
+        } else if let Ok(i) = spec.extract::<isize>() {
             let n = shape[k] as isize;
             let a = if i < 0 { n + i } else { i };
             if a < 0 || a >= n {
@@ -268,14 +305,20 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
                     i, k, shape[k]
                 )));
             }
-            axis_idx.push(vec![a as usize]);
-            is_int.push(true);
+            comps.push(IndexComp::Axis {
+                idxs: vec![a as usize],
+                is_int: true,
+            });
+            k += 1;
         } else if let Ok(sl) = spec.downcast::<PySlice>() {
             let start = sl.getattr("start")?.extract::<Option<isize>>()?;
             let stop = sl.getattr("stop")?.extract::<Option<isize>>()?;
             let step = sl.getattr("step")?.extract::<Option<isize>>()?;
-            axis_idx.push(resolve_slice(start, stop, step, shape[k])?);
-            is_int.push(false);
+            comps.push(IndexComp::Axis {
+                idxs: resolve_slice(start, stop, step, shape[k])?,
+                is_int: false,
+            });
+            k += 1;
         } else if spec.is_instance_of::<PyBoolArray>() {
             let mask = spec.downcast::<PyBoolArray>()?;
             if mask.borrow().len() != shape[k] {
@@ -294,8 +337,11 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
                 .filter(|(_, &b)| b)
                 .map(|(i, _)| i)
                 .collect();
-            axis_idx.push(idxs);
-            is_int.push(false);
+            comps.push(IndexComp::Axis {
+                idxs,
+                is_int: false,
+            });
+            k += 1;
         } else if let Ok(list) = spec.downcast::<PyList>() {
             let n = list.len();
             let first_is_bool = n > 0 && list.get_item(0)?.is_instance_of::<PyBool>();
@@ -315,8 +361,10 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
                         idxs.push(i);
                     }
                 }
-                axis_idx.push(idxs);
-                is_int.push(false);
+                comps.push(IndexComp::Axis {
+                    idxs,
+                    is_int: false,
+                });
             } else {
                 let mut idxs = Vec::new();
                 for i in 0..n {
@@ -330,9 +378,12 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
                     }
                     idxs.push(a as usize);
                 }
-                axis_idx.push(idxs);
-                is_int.push(false);
+                comps.push(IndexComp::Axis {
+                    idxs,
+                    is_int: false,
+                });
             }
+            k += 1;
         } else {
             let ty = spec
                 .get_type()
@@ -346,12 +397,15 @@ fn parse_index(slf: &IntervalArray, index: &Bound<'_, PyAny>) -> PyResult<Parsed
         }
     }
 
-    while axis_idx.len() < ndim {
-        axis_idx.push((0..shape[axis_idx.len()]).collect());
-        is_int.push(false);
+    while k < ndim {
+        comps.push(IndexComp::Axis {
+            idxs: (0..shape[k]).collect(),
+            is_int: false,
+        });
+        k += 1;
     }
 
-    Ok(ParsedIndex { axis_idx, is_int })
+    Ok(ParsedIndex { comps })
 }
 
 fn apply_index_get(
@@ -361,50 +415,68 @@ fn apply_index_get(
 ) -> PyResult<Py<PyAny>> {
     let ndim = slf.ndim();
     let strides = slf.strides();
-    let scalar = parsed.is_int.iter().all(|&b| b);
+    let scalar = parsed.scalar();
     if scalar {
         let mut flat = 0usize;
-        for k in 0..ndim {
-            flat += parsed.axis_idx[k][0] * strides[k];
+        for (k, comp) in parsed.axis_comps().enumerate() {
+            if let IndexComp::Axis { idxs, .. } = comp {
+                flat += idxs[0] * strides[k];
+            }
         }
         let iv = slf.get(flat);
         return Ok((iv.midpoint(), iv.radius()).to_object(py).into_any());
     }
 
+    // Shape of the result: NewAxis contributes a length-1 dimension, a
+    // non-integer Axis contributes its selection length, and an integer
+    // Axis is consumed (its dimension is dropped).
     let mut out_shape = Vec::new();
-    for k in 0..ndim {
-        if !parsed.is_int[k] {
-            out_shape.push(parsed.axis_idx[k].len());
+    for comp in &parsed.comps {
+        match comp {
+            IndexComp::NewAxis => out_shape.push(1),
+            IndexComp::Axis { idxs, is_int } => {
+                if !is_int {
+                    out_shape.push(idxs.len());
+                }
+            }
         }
     }
     let out_total: usize = out_shape.iter().product();
     let mut out_mids = vec![0.0f64; out_total];
     let mut out_rads = vec![0.0f64; out_total];
 
+    let axis_comps: Vec<(usize, &IndexComp)> = parsed.axis_comps().enumerate().collect();
     let mut cursor = vec![0usize; ndim];
     let mut cur_flat = 0isize;
-    for k in 0..ndim {
-        cur_flat += parsed.axis_idx[k][0] as isize * strides[k] as isize;
+    for (k, comp) in axis_comps.iter() {
+        if let IndexComp::Axis { idxs, .. } = comp {
+            cur_flat += idxs[0] as isize * strides[*k] as isize;
+        }
     }
     let mids = slf.data().midpoints();
     let rads = slf.data().radii();
     for out_flat in 0..out_total {
         out_mids[out_flat] = mids[cur_flat as usize];
         out_rads[out_flat] = rads[cur_flat as usize];
-        for k in (0..ndim).rev() {
-            if parsed.is_int[k] {
+        // Iterate axes in reverse so the last axis increments fastest
+        // (row-major output order).
+        for &(k, comp) in axis_comps.iter().rev() {
+            let IndexComp::Axis { idxs, is_int } = comp else {
+                unreachable!()
+            };
+            if *is_int {
                 continue;
             }
-            if cursor[k] + 1 < parsed.axis_idx[k].len() {
-                let old = parsed.axis_idx[k][cursor[k]] as isize;
+            if cursor[k] + 1 < idxs.len() {
+                let old = idxs[cursor[k]] as isize;
                 cursor[k] += 1;
-                let new = parsed.axis_idx[k][cursor[k]] as isize;
+                let new = idxs[cursor[k]] as isize;
                 cur_flat += (new - old) * strides[k] as isize;
                 break;
             } else {
-                cur_flat -= parsed.axis_idx[k][cursor[k]] as isize * strides[k] as isize;
+                cur_flat -= idxs[cursor[k]] as isize * strides[k] as isize;
                 cursor[k] = 0;
-                cur_flat += parsed.axis_idx[k][0] as isize * strides[k] as isize;
+                cur_flat += idxs[0] as isize * strides[k] as isize;
             }
         }
     }
@@ -420,15 +492,24 @@ fn apply_index_set(
 ) -> PyResult<()> {
     let ndim = slf.ndim();
     let strides = slf.strides().to_vec();
+    let axis_comps: Vec<&IndexComp> = parsed.axis_comps().collect();
 
-    let sizes: Vec<usize> = (0..ndim).map(|k| parsed.axis_idx[k].len()).collect();
+    let sizes: Vec<usize> = axis_comps
+        .iter()
+        .map(|c| match c {
+            IndexComp::Axis { idxs, .. } => idxs.len(),
+            IndexComp::NewAxis => unreachable!(),
+        })
+        .collect();
     let total: usize = sizes.iter().product();
     let mut positions: Vec<usize> = Vec::with_capacity(total);
     let mut cursor = vec![0usize; ndim];
     for _ in 0..total {
         let mut flat = 0usize;
-        for k in 0..ndim {
-            flat += parsed.axis_idx[k][cursor[k]] * strides[k];
+        for (k, comp) in axis_comps.iter().enumerate() {
+            if let IndexComp::Axis { idxs, .. } = comp {
+                flat += idxs[cursor[k]] * strides[k];
+            }
         }
         positions.push(flat);
         for k in (0..ndim).rev() {
@@ -746,15 +827,18 @@ impl PyIntervalArray {
         let n = if ndim == 0 { 0 } else { slf.inner.shape()[0] };
         let mut items: Vec<Py<PyAny>> = Vec::with_capacity(n);
         for i in 0..n {
-            let mut axis_idx: Vec<Vec<usize>> = Vec::with_capacity(ndim);
-            let mut is_int: Vec<bool> = Vec::with_capacity(ndim);
-            axis_idx.push(vec![i]);
-            is_int.push(true);
+            let mut comps = Vec::with_capacity(ndim);
+            comps.push(IndexComp::Axis {
+                idxs: vec![i],
+                is_int: true,
+            });
             for k in 1..ndim {
-                axis_idx.push((0..slf.inner.shape()[k]).collect());
-                is_int.push(false);
+                comps.push(IndexComp::Axis {
+                    idxs: (0..slf.inner.shape()[k]).collect(),
+                    is_int: false,
+                });
             }
-            let parsed = ParsedIndex { axis_idx, is_int };
+            let parsed = ParsedIndex { comps };
             items.push(apply_index_get(py, &slf.inner, &parsed)?);
         }
         let list = PyList::new_bound(py, items);
@@ -1219,6 +1303,13 @@ impl PyIntervalArray {
         }
     }
 
+    /// NumPy-style alias for `ln`.
+    fn log(&self) -> Self {
+        Self {
+            inner: math::apply_unary(&self.inner, math::ln_interval),
+        }
+    }
+
     fn log2(&self) -> Self {
         Self {
             inner: math::apply_unary(&self.inner, math::log2_interval),
@@ -1261,18 +1352,82 @@ impl PyIntervalArray {
         }
     }
 
-    fn round(&self) -> Self {
-        Self {
-            inner: math::apply_unary(&self.inner, extra::round_interval),
+    #[pyo3(signature = (ndigits=None))]
+    fn round(&self, ndigits: Option<i32>) -> Self {
+        match ndigits {
+            None => Self {
+                inner: math::apply_unary(&self.inner, extra::round_interval),
+            },
+            Some(d) => Self {
+                inner: math::apply_unary(&self.inner, move |iv, m| {
+                    extra::round_ndigits_interval(iv, m, d)
+                }),
+            },
         }
     }
 
     #[pyo3(signature = (ndigits=None))]
     fn __round__(&self, ndigits: Option<i32>) -> Self {
-        let _ = ndigits;
-        Self {
-            inner: math::apply_unary(&self.inner, extra::round_interval),
+        match ndigits {
+            None => Self {
+                inner: math::apply_unary(&self.inner, extra::round_interval),
+            },
+            Some(d) => Self {
+                inner: math::apply_unary(&self.inner, move |iv, m| {
+                    extra::round_ndigits_interval(iv, m, d)
+                }),
+            },
         }
+    }
+
+    fn __getstate__(&self) -> (Vec<usize>, Vec<f64>, Vec<f64>) {
+        (
+            self.inner.shape().to_vec(),
+            self.inner.data().midpoints().to_vec(),
+            self.inner.data().radii().to_vec(),
+        )
+    }
+
+    fn __reduce__(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(PyObject, (Vec<f64>, Vec<f64>, Vec<usize>))> {
+        let module = pyo3::types::PyModule::import_bound(py, "precise_numpy._precise_numpy")?;
+        let ctor = module.getattr("from_raw_parts")?;
+        let state = (
+            self.inner.data().midpoints().to_vec(),
+            self.inner.data().radii().to_vec(),
+            self.inner.shape().to_vec(),
+        );
+        Ok((ctor.into_any().unbind(), state))
+    }
+
+    fn __setstate__(
+        &mut self,
+        state: (Vec<usize>, Vec<f64>, Vec<f64>),
+    ) -> PyResult<()> {
+        let (shape, mids, rads) = state;
+        if mids.len() != rads.len() {
+            return Err(PyValueError::new_err(
+                "midpoints and radii must have the same length",
+            ));
+        }
+        if let Some(&r) = rads.iter().find(|&&r| r < 0.0) {
+            return Err(PyValueError::new_err(format!(
+                "radii must be non-negative, got {}",
+                r
+            )));
+        }
+        let total: usize = shape.iter().product();
+        if mids.len() != total {
+            return Err(PyValueError::new_err(format!(
+                "midpoints length {} != product of shape {:?}",
+                mids.len(),
+                shape
+            )));
+        }
+        self.inner = IntervalArray::from_raw_parts(&mids, &rads, &shape);
+        Ok(())
     }
 
     #[pyo3(signature = (a_min, a_max))]
@@ -1998,12 +2153,9 @@ fn diag(v: &Bound<'_, PyAny>) -> PyResult<PyIntervalArray> {
 
 #[pyfunction(signature = (start, stop, num=50, endpoint=true))]
 fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> PyResult<PyIntervalArray> {
-    if num == 0 {
-        return Err(PyValueError::new_err(
-            "linspace: number of samples must be >= 1",
-        ));
-    }
-    let arr = if num == 1 {
+    let arr = if num == 0 {
+        IntervalArray::zeros(&[0])
+    } else if num == 1 {
         IntervalArray::from_f64_slice(&[start])
     } else if endpoint {
         let step = (stop - start) / (num - 1) as f64;
@@ -2091,6 +2243,13 @@ fn split(
     axis: usize,
 ) -> PyResult<Vec<PyIntervalArray>> {
     let inner = a.borrow().inner.clone();
+    if axis >= inner.ndim() {
+        return Err(PyValueError::new_err(format!(
+            "axis {} is out of bounds for array of dimension {}",
+            axis,
+            inner.ndim()
+        )));
+    }
     let indices: Vec<usize> = if let Ok(v) = indices_or_sections.extract::<usize>() {
         if v == 0 {
             return Err(PyValueError::new_err("number of sections must be >= 1"));
@@ -2192,6 +2351,12 @@ fn from_raw_parts(
         return Err(PyValueError::new_err(
             "midpoints and radii must have the same length",
         ));
+    }
+    if let Some(&r) = radii.iter().find(|&&r| r < 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "radii must be non-negative, got {}",
+            r
+        )));
     }
     let total: usize = shape.iter().product();
     if midpoints.len() != total {
@@ -2434,6 +2599,6 @@ fn _precise_numpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eig, m)?)?;
     m.add_function(wrap_pyfunction!(svd, m)?)?;
     m.add_function(wrap_pyfunction!(pinv, m)?)?;
-    m.add("__version__", "0.2.0")?;
+    m.add("__version__", "0.2.2")?;
     Ok(())
 }

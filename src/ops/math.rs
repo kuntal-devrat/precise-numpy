@@ -226,16 +226,16 @@ pub fn abs_interval(iv: Interval, m: f64) -> (f64, f64) {
 /// Each element is stored as (eval of input midpoint, outward-rounded
 /// distance to the enclosure endpoints), so the stored center matches
 /// the round-to-nearest numpy evaluation.
-pub fn apply_unary(
-    a: &IntervalArray,
-    f: fn(Interval, f64) -> (f64, f64),
-) -> IntervalArray {
+pub fn apply_unary<F>(a: &IntervalArray, f: F) -> IntervalArray
+where
+    F: Fn(Interval, f64) -> (f64, f64) + Sync,
+{
     let n = a.len();
     let mut result = IntervalArray::zeros(a.shape());
 
     // Parallelize large arrays
     if n >= vec_ops::PAR_THRESHOLD {
-        return apply_unary_parallel(a, f);
+        return apply_unary_parallel(a, &f);
     }
 
     let mids = a.data().midpoints();
@@ -253,46 +253,36 @@ pub fn apply_unary(
 }
 
 /// Parallel apply_unary using Rayon for large arrays.
-fn apply_unary_parallel(
-    a: &IntervalArray,
-    f: fn(Interval, f64) -> (f64, f64),
-) -> IntervalArray {
+fn apply_unary_parallel<F>(a: &IntervalArray, f: &F) -> IntervalArray
+where
+    F: Fn(Interval, f64) -> (f64, f64) + Sync,
+{
     use rayon::prelude::*;
 
     let n = a.len();
     let mids = a.data().midpoints();
     let rads = a.data().radii();
 
-    let mut out_mids = vec![0.0f64; n];
-    let mut out_rads = vec![0.0f64; n];
+    let mut result = IntervalArray::zeros(a.shape());
 
     // Process in parallel chunks
     const CHUNK: usize = 4096;
-    let chunks: Vec<(usize, usize)> = (0..n).step_by(CHUNK)
-        .map(|start| (start, (start + CHUNK).min(n)))
-        .collect();
+    let (r_mids, r_rads) = result.data_mut().as_mut_slices();
+    r_mids
+        .par_chunks_mut(CHUNK)
+        .zip(r_rads.par_chunks_mut(CHUNK))
+        .enumerate()
+        .for_each(|(chunk_idx, (om, or))| {
+            let start = chunk_idx * CHUNK;
+            for i in 0..om.len() {
+                let iv = Interval::from_midpoint_radius(mids[start + i], rads[start + i]);
+                let (mid, rad) = f(iv, mids[start + i]);
+                om[i] = mid;
+                or[i] = rad;
+            }
+        });
 
-    let results: Vec<(Vec<f64>, Vec<f64>)> = chunks.par_iter().map(|&(start, end)| {
-        let len = end - start;
-        let mut chunk_mids = vec![0.0f64; len];
-        let mut chunk_rads = vec![0.0f64; len];
-        for i in 0..len {
-            let iv = Interval::from_midpoint_radius(mids[start + i], rads[start + i]);
-            let (mid, rad) = f(iv, mids[start + i]);
-            chunk_mids[i] = mid;
-            chunk_rads[i] = rad;
-        }
-        (chunk_mids, chunk_rads)
-    }).collect();
-
-    // Stitch results back
-    for (idx, &(start, end)) in chunks.iter().enumerate() {
-        let (ref cm, ref cr) = results[idx];
-        out_mids[start..end].copy_from_slice(cm);
-        out_rads[start..end].copy_from_slice(cr);
-    }
-
-    IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape())
+    result
 }
 
 #[cfg(test)]

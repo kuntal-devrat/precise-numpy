@@ -282,6 +282,20 @@ pub fn svd(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray, IntervalA
     }
     let m = a.shape()[0];
     let n = a.shape()[1];
+    // Degenerate input: return empty factors with the NumPy-convention
+    // reduced shapes (m >= n: U (m, n), S (n,), VT (n, n); else
+    // U (m, m), S (m,), VT (m, n)).
+    if m == 0 || n == 0 {
+        let (u_shape, s_len, vt_shape) = if m >= n {
+            ([m, n], n, [n, n])
+        } else {
+            ([m, m], m, [m, n])
+        };
+        let u = IntervalArray::zeros(&u_shape);
+        let s = IntervalArray::zeros(&[s_len]);
+        let vt = IntervalArray::zeros(&vt_shape);
+        return Ok((u, s, vt));
+    }
     // One-sided Jacobi needs at least as many rows as columns; for wide
     // matrices compute the SVD of A^T and transpose the factors back.
     let at = a.transpose();
@@ -388,9 +402,14 @@ pub fn svd(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray, IntervalA
 
 /// Moore-Penrose pseudoinverse via SVD.
 pub fn pinv(a: &IntervalArray) -> Result<IntervalArray, String> {
-    let (u, s, vt) = svd(a)?;
     let m = a.shape()[0];
     let n = a.shape()[1];
+    // Empty input (zero rows or zero columns): the pseudoinverse is empty
+    // too (numpy returns an empty array with transposed shape).
+    if m == 0 || n == 0 {
+        return Ok(IntervalArray::zeros(&[n, m]));
+    }
+    let (u, s, vt) = svd(a)?;
     let k = m.min(n);
     let s_vals: Vec<f64> = s.data().midpoints().to_vec();
     let tol = f64::EPSILON * m.max(n) as f64 * s_vals[0].max(f64::MIN_POSITIVE);

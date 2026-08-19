@@ -86,6 +86,7 @@ def _unary(fname):
 
 # NumPy-style aliases for IntervalArray methods.
 abs_ = _unary("abs")
+absolute = abs_  # numpy-compatible alias
 sign = _unary("sign")
 floor = _unary("floor")
 ceil = _unary("ceil")
@@ -94,6 +95,7 @@ round_ = _unary("round")
 sqrt = _unary("sqrt")
 exp = _unary("exp")
 ln = _unary("ln")
+log = ln  # numpy-compatible alias
 log2 = _unary("log2")
 log10 = _unary("log10")
 sin = _unary("sin")
@@ -291,6 +293,7 @@ __all__ = [
     "savetxt",
     "loadtxt",
     "abs_",
+    "absolute",
     "sign",
     "floor",
     "ceil",
@@ -299,6 +302,7 @@ __all__ = [
     "sqrt",
     "exp",
     "ln",
+    "log",
     "log2",
     "log10",
     "sin",

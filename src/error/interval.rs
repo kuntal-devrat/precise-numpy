@@ -86,6 +86,11 @@ impl Interval {
             return f64::INFINITY;
         }
         let mid = self.midpoint();
+        if !mid.is_finite() {
+            // lo + hi overflowed to +inf or -inf; the interval is finite but
+            // wider than any representable radius, so return +inf.
+            return f64::INFINITY;
+        }
         // hi - mid and mid - lo with exact residuals (TwoSum), then take the
         // larger value with its residual and round the radius up.
         let s1 = self.hi - mid;
@@ -655,6 +660,20 @@ mod tests {
     fn test_relative_error() {
         let i = Interval::from_midpoint_radius(10.0, 0.01);
         assert!((i.relative_error() - 0.001).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_radius_no_nan_on_midpoint_overflow() {
+        // lo + hi overflows to +inf, so the midpoint is inf; the radius
+        // must be +inf (the interval is finite but wider than any
+        // representable radius), never NaN.
+        let lo = f64::MAX * 0.75;
+        let hi = f64::MAX * 0.9;
+        assert!((lo + hi).is_infinite());
+        let i = Interval::new(lo, hi);
+        let r = i.radius();
+        assert_eq!(r, f64::INFINITY);
+        assert!(!r.is_nan());
     }
 
     #[test]

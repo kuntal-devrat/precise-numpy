@@ -72,6 +72,8 @@ class TestCreation(unittest.TestCase):
         self.assertEqual(ls.get(0)[0], 0.0)
         self.assertEqual(ls.get(4)[0], 1.0)
         self.assertEqual(pnp.linspace(0.0, 1.0, 4, endpoint=False).get(3)[0], 0.75)
+        # num=0 returns an empty array (numpy behavior), not an error.
+        self.assertEqual(pnp.linspace(0.0, 1.0, 0).shape, (0,))
         ar = pnp.arange(0.0, 5.0, 1.0)
         self.assertEqual(len(ar), 5)
         self.assertEqual(ar.get(4)[0], 4.0)
@@ -124,6 +126,38 @@ class TestIndexing(unittest.TestCase):
         self.assertEqual(m[1, 2][0], 5.0)
         self.assertEqual(m[0].values(), [0.0, 1.0, 2.0])
         self.assertEqual(m[:, 1].values(), [1.0, 4.0])
+
+    def test_ellipsis_indexing(self):
+        m = pnp.arange(0.0, 6.0, 1.0).reshape(2, 3)
+        self.assertEqual(m[..., 1].values(), [1.0, 4.0])
+        self.assertEqual(m[0, ...].values(), [0.0, 1.0, 2.0])
+        self.assertEqual(m[..., 0:2].values(), [0.0, 1.0, 3.0, 4.0])
+        # Single ellipsis on a 1D array is a no-op full slice.
+        self.assertEqual(self.a[..., 1:3].values(), [20.0, 30.0])
+        with self.assertRaises(IndexError):
+            m[..., ...]
+
+    def test_newaxis_indexing(self):
+        m = pnp.arange(0.0, 6.0, 1.0).reshape(2, 3)
+        self.assertEqual(m[None].shape, (1, 2, 3))
+        self.assertEqual(m[None].values(), m.values())
+        self.assertEqual(m[:, None].shape, (2, 1, 3))
+        self.assertEqual(m[None, :, 1].shape, (1, 2))
+        self.assertEqual(m[1, None, 2].shape, (1,))
+
+    def test_pickle(self):
+        import pickle
+
+        for arr in (self.a, pnp.arange(0.0, 4.0, 1.0).reshape(2, 2)):
+            s = pickle.dumps(arr)
+            b = pickle.loads(s)
+            self.assertEqual(b.shape, arr.shape)
+            self.assertEqual(b.values(), arr.values())
+            self.assertEqual(b.radii(), arr.radii())
+        mask = self.a > 15.0
+        s = pickle.dumps(mask)
+        b = pickle.loads(s)
+        self.assertEqual(b.tolist(), mask.tolist())
 
     def test_iteration(self):
         vals = [v[0] for v in self.a]
@@ -236,6 +270,8 @@ class TestMathFunctions(unittest.TestCase):
         e = pnp.array([0.0, 1.0]).exp()
         self.assertLess(abs(e.midpoint(1) - math.e), 1e-10)
         self.assertEqual(pnp.array([1.0, math.e]).ln().midpoint(1), 1.0)
+        self.assertEqual(pnp.array([1.0, math.e]).log().midpoint(1), 1.0)
+        self.assertEqual(pnp.log(pnp.array([1.0, math.e])).midpoint(1), 1.0)
         self.assertEqual(pnp.array([2.0, 4.0]).log2().values(), [1.0, 2.0])
         self.assertEqual(pnp.array([10.0, 100.0]).log10().values(), [1.0, 2.0])
 
@@ -247,6 +283,11 @@ class TestMathFunctions(unittest.TestCase):
         self.assertEqual(a.trunc().values(), [1.0, 2.0, 3.0])
         self.assertEqual(a.round().values(), [1.0, 2.0, 4.0])
         self.assertEqual(round(a).values(), [1.0, 2.0, 4.0])
+        self.assertEqual(round(a, 1).values(), [1.1, 2.5, 3.7])
+        self.assertEqual(
+            pnp.array([1.2345, 2.6789]).round(2).values(), [1.23, 2.68]
+        )
+        self.assertEqual(pnp.round_(pnp.array([1.2345])).values(), [1.0])
 
     def test_clip_sign_nan(self):
         a = pnp.array([-2.0, 0.5, 5.0])
@@ -400,6 +441,9 @@ class TestStackingSplit(unittest.TestCase):
         self.assertEqual(parts[1].values(), [1.0, 3.0])
         with self.assertRaises(ValueError):
             pnp.split(a, 3)
+        # Out-of-bounds axis must raise, not crash the interpreter.
+        with self.assertRaises(ValueError):
+            pnp.split(a, 2, axis=3)
 
     def test_where_nonzero(self):
         a = pnp.array([1.0, 2.0, 3.0])
@@ -437,6 +481,19 @@ class TestDotMatmul(unittest.TestCase):
         self.assertEqual((v @ m).values(), [4.0, 6.0])
         with self.assertRaises(ValueError):
             m @ pnp.array([1.0, 2.0, 3.0]).reshape(3, 1)
+
+    def test_matmul_empty_columns(self):
+        # Regression: zero columns previously hit a zero chunk size panic
+        # in the parallel path for M >= 256.
+        a = pnp.ones([300, 2])
+        b = pnp.zeros([2, 0])
+        r = a @ b
+        self.assertEqual(r.shape, (300, 0))
+        self.assertEqual(r.size, 0)
+        # Zero rows on the left too.
+        self.assertEqual((pnp.zeros([0, 3]) @ pnp.zeros([3, 4])).shape, (0, 4))
+        # Zero inner dimension: result is all zeros.
+        self.assertEqual((a @ pnp.zeros([2, 0]) @ pnp.zeros([0, 2])).shape, (300, 2))
 
 
 class TestLinalg(unittest.TestCase):
@@ -489,6 +546,23 @@ class TestLinalg(unittest.TestCase):
         eye = m @ p
         self.assertLess(abs(eye.get(0)[0] - 1.0), 1e-8)
         self.assertLess(abs(eye.get(3)[0] - 1.0), 1e-8)
+
+    def test_pinv_empty(self):
+        import precise_numpy.linalg as la
+
+        # Regression: empty input previously panicked on s_vals[0].
+        p = la.pinv(pnp.zeros([3, 0]))
+        self.assertEqual(p.shape, (0, 3))
+        self.assertEqual(la.pinv(pnp.zeros([0, 3])).shape, (3, 0))
+        # Reduced SVD conventions: m >= n gives U (m, n), VT (n, n).
+        u, s, vt = la.svd(pnp.zeros([3, 0]))
+        self.assertEqual(u.shape, (3, 0))
+        self.assertEqual(s.shape, (0,))
+        self.assertEqual(vt.shape, (0, 0))
+        u, s, vt = la.svd(pnp.zeros([0, 3]))
+        self.assertEqual(u.shape, (0, 0))
+        self.assertEqual(s.shape, (0,))
+        self.assertEqual(vt.shape, (0, 3))
 
 
 class TestRandom(unittest.TestCase):
@@ -565,7 +639,7 @@ class TestFileIO(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "0.2.0")
+        self.assertEqual(pnp.__version__, "0.2.2")
 
 
 if __name__ == "__main__":

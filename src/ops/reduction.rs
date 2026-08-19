@@ -24,20 +24,16 @@ pub fn sum(a: &IntervalArray) -> Interval {
     let rads = a.data().radii();
     let n = a.len();
 
-    // Phase 1 (round-to-nearest): accumulate the midpoint, recording the
-    // exact rounding error of each partial sum.
-    let mut errs = Vec::with_capacity(n);
+    // Single pass: accumulate the midpoint in round-to-nearest with the
+    // exact TwoSum rounding error of each partial sum, and accumulate the
+    // radii/errors rounded up inline.
     let mut s = 0.0f64;
-    for i in 0..n {
-        let t = s + mids[i];
-        errs.push(twosum_err(s, mids[i], t));
-        s = t;
-    }
-
-    // Phase 2: accumulate radii and errors, rounding up each step.
     let mut rad = 0.0f64;
     for i in 0..n {
-        rad = add_ru_chain(add_ru_chain(rad, rads[i]), errs[i].abs());
+        let t = s + mids[i];
+        let err = twosum_err(s, mids[i], t);
+        s = t;
+        rad = add_ru_chain(add_ru_chain(rad, rads[i]), err.abs());
     }
 
     Interval::from_midpoint_radius(s, rad)
@@ -138,36 +134,33 @@ pub fn dot(a: &IntervalArray, b: &IntervalArray) -> Interval {
     let (a_mids, a_rads) = (a.data().midpoints(), a.data().radii());
     let (b_mids, b_rads) = (b.data().midpoints(), b.data().radii());
 
-    // Phase 1 (RTN): products and TwoSum accumulation with exact errors.
-    let mut errs = Vec::with_capacity(2 * n);
+    // Single pass: products and TwoSum accumulation with exact errors,
+    // accumulating all radius contributions rounded up inline.
     let mut s = 0.0f64;
-    for i in 0..n {
-        let p = a_mids[i] * b_mids[i];
-        errs.push(if p.is_finite() {
-            a_mids[i].mul_add(b_mids[i], -p).abs()
-        } else {
-            f64::INFINITY
-        });
-        let t = s + p;
-        errs.push(twosum_err(s, p, t));
-        s = t;
-    }
-
-    // Phase 2: accumulate all radius contributions, rounding up each step.
     let mut rad = 0.0f64;
     for i in 0..n {
+        let am = a_mids[i];
+        let ar = a_rads[i];
+        let bm = b_mids[i];
+        let br = b_rads[i];
+        let p = am * bm;
+        let e1 = if p.is_finite() {
+            am.mul_add(bm, -p).abs()
+        } else {
+            f64::INFINITY
+        };
+        let t = s + p;
+        let e2 = twosum_err(s, p, t);
+        s = t;
         rad = add_ru_chain(
             add_ru_chain(
                 add_ru_chain(
-                    add_ru_chain(
-                        rad,
-                        mul_ru(a_mids[i].abs(), b_rads[i]),
-                    ),
-                    mul_ru(b_mids[i].abs(), a_rads[i]),
+                    add_ru_chain(rad, mul_ru(am.abs(), br)),
+                    mul_ru(bm.abs(), ar),
                 ),
-                mul_ru(a_rads[i], b_rads[i]),
+                mul_ru(ar, br),
             ),
-                    add_ru_chain(errs[2 * i], errs[2 * i + 1].abs()),
+            add_ru_chain(e1, e2.abs()),
         );
     }
 
@@ -183,20 +176,16 @@ pub fn cumsum(a: &IntervalArray) -> IntervalArray {
     let mut out_mids = vec![0.0f64; n];
     let mut out_rads = vec![0.0f64; n];
 
-    // Phase 1 (RTN): cumulative midpoints with exact per-step errors.
-    let mut errs = vec![0.0f64; n];
+    // Single pass: cumulative midpoints with exact per-step TwoSum errors,
+    // and cumulative radii rounded up inline.
     let mut cum_mid = 0.0f64;
-    for i in 0..n {
-        let t = cum_mid + mids[i];
-        errs[i] = twosum_err(cum_mid, mids[i], t);
-        cum_mid = t;
-        out_mids[i] = cum_mid;
-    }
-
-    // Phase 2: cumulative radii, rounding up each step.
     let mut cum_rad = 0.0f64;
     for i in 0..n {
-        cum_rad = add_ru_chain(add_ru_chain(cum_rad, rads[i]), errs[i].abs());
+        let t = cum_mid + mids[i];
+        let err = twosum_err(cum_mid, mids[i], t);
+        cum_mid = t;
+        cum_rad = add_ru_chain(add_ru_chain(cum_rad, rads[i]), err.abs());
+        out_mids[i] = cum_mid;
         out_rads[i] = cum_rad;
     }
 
@@ -237,6 +226,13 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let a_rads = a.data().radii();
     let b_mids = b.data().midpoints();
     let b_rads = b.data().radii();
+
+    // Degenerate output: zero rows or zero columns (numpy returns an
+    // empty result). This also avoids chunk sizes of zero in the
+    // parallel path below.
+    if m == 0 || n == 0 {
+        return IntervalArray::zeros(&[m, n]);
+    }
 
     let mut r_mids = vec![0.0f64; m * n];
     let mut r_rads = vec![0.0f64; m * n];
@@ -279,49 +275,42 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     // Rigorous radius pass: for every output element recompute the dot
     // product with TwoSum error tracking (the dgemm midpoint is only used
     // as the center; the radius encloses every rounding along the chain).
-    for i in 0..m {
+    // The per-product errors are accumulated inline, so no per-element
+    // scratch buffers are needed. Output elements are independent, so the
+    // pass is parallelized over rows.
+    r_rads.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
         let a_row = i * k;
         for j in 0..n {
-            // Phase 1 (RTN): exact per-step errors of products and partial sums.
-            let mut errs = Vec::with_capacity(2 * k);
             let mut s = 0.0f64;
-            for t in 0..k {
-                let am = a_mids[a_row + t];
-                let bm = b_mids[t * n + j];
-                let p = am * bm;
-                errs.push(if p.is_finite() {
-                    am.mul_add(bm, -p).abs()
-                } else {
-                    f64::INFINITY
-                });
-                let nt = s + p;
-                errs.push(twosum_err(s, p, nt));
-                s = nt;
-            }
-            // Phase 2 (round-up): radius accumulation.
             let mut rad = 0.0f64;
             for t in 0..k {
                 let am = a_mids[a_row + t];
                 let ar = a_rads[a_row + t];
                 let bm = b_mids[t * n + j];
                 let br = b_rads[t * n + j];
+                let p = am * bm;
+                let e1 = if p.is_finite() {
+                    am.mul_add(bm, -p).abs()
+                } else {
+                    f64::INFINITY
+                };
+                let nt = s + p;
+                let e2 = twosum_err(s, p, nt);
+                s = nt;
                 rad = add_ru_chain(
                     add_ru_chain(
                         add_ru_chain(
-                            add_ru_chain(
-                                rad,
-                                mul_ru(am.abs(), br),
-                            ),
+                            add_ru_chain(rad, mul_ru(am.abs(), br)),
                             mul_ru(bm.abs(), ar),
                         ),
                         mul_ru(ar, br),
                     ),
-                    add_ru_chain(errs[2 * t], errs[2 * t + 1].abs()),
+                    add_ru_chain(e1, e2.abs()),
                 );
             }
-            r_rads[i * n + j] = rad;
+            row[j] = rad;
         }
-    }
+    });
 
     IntervalArray::from_raw_parts(&r_mids, &r_rads, &[m, n])
 }
@@ -501,6 +490,18 @@ mod tests {
             MatmulResult::Scalar(iv) => assert!((iv.midpoint() - 32.0).abs() < 1e-10),
             MatmulResult::Array(_) => panic!("expected scalar"),
         }
+    }
+
+    #[test]
+    fn test_matmul_zero_dimensions() {
+        // Regression: zero columns/rows previously panicked (chunk size 0).
+        let a = IntervalArray::from_f64_vec(&vec![1.0; 300 * 2], &[300, 2]);
+        let b = IntervalArray::from_f64_vec(&Vec::new(), &[2, 0]);
+        let c = matmul(&a, &b);
+        assert_eq!(c.shape(), &[300, 0]);
+        let d = IntervalArray::from_f64_vec(&Vec::new(), &[0, 2]);
+        let e = IntervalArray::from_f64_vec(&vec![1.0; 2 * 3], &[2, 3]);
+        assert_eq!(matmul(&d, &e).shape(), &[0, 3]);
     }
 
     #[test]
