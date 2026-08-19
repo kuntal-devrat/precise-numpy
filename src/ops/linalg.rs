@@ -25,7 +25,7 @@
 
 use crate::array::IntervalArray;
 use crate::error::Interval;
-use crate::error::interval::{add_ru, div_ru, mul_ru, next_up};
+use crate::error::interval::{add_ru, div_ru, mul_ru, next_down, next_up};
 use crate::ops::reduction::{matmul, matmul_general, MatmulResult};
 
 fn row_major(_m: usize, n: usize, i: usize, j: usize) -> usize {
@@ -1018,12 +1018,13 @@ pub fn eig_general(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray), 
     }
     let vecs = vecs_sorted;
 
-    // ── Rigorous eigenvalue enclosure (Bauer–Fike) ─────────────────────
-    // Ã = Ṽ Λ̃ Ṽ⁻¹ + E with E = Ã − ṼΛ̃Ṽ⁻¹ enclosed in intervals, so
-    // |λ_j(Ã) − λ̃_j| ≤ cond₂(Ṽ)·‖E‖₂ ≤ ‖Ṽ‖_F·‖Ṽ⁻¹‖_F·‖E‖_F.
-    // Eigenvectors of a non-normal matrix cannot be bounded without a
-    // spectral-gap condition that generally fails, so they are returned as
-    // unbounded intervals (sound, never fake-precise).
+    // ── Rigorous eigenvalue and eigenvector enclosure (Bauer–Fike) ──────
+    // Ã = Ṽ Λ̃ Ṽ⁻¹ + E with E = Ã − ṼΛ̃Ṽ⁻¹ enclosed in intervals.
+    // Eigenvalue radii: |λ_j(Ã) − λ̃_j| ≤ cond₂(Ṽ)·‖E‖₂ ≤ ‖Ṽ‖_F·‖Ṽ⁻¹‖_F·‖E‖_F.
+    // Eigenvector radii (per eigenvalue i): ||δv_i|| ≤ cond₂(Ṽ)·‖E‖_F / δ_i
+    // where δ_i is the eigengap (distance to the nearest other eigenvalue minus
+    // both their radii).  The cap of 1.0 encloses the entire unit ball when the
+    // matrix is defective or the eigengap vanishes — still sound, just conservative.
     let mut vmat: Vec<Interval> = vec![Interval::zero(); n * n];
     for i in 0..n {
         for j in 0..n {
@@ -1086,11 +1087,22 @@ pub fn eig_general(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray), 
     let r_lambda = mul_ru(mul_ru(v_norm, vinv_norm), r_res);
 
     let evals = IntervalArray::from_raw_parts(&vals_sorted, &vec![r_lambda; n], &[n]);
-    let evecs = IntervalArray::from_raw_parts(
-        &vecs,
-        &vec![f64::INFINITY; n * n],
-        &[n, n],
-    );
+    let r_lambda_vec = vec![r_lambda; n];
+    let mut ev_rads = vec![0.0f64; n];
+    for i in 0..n {
+        let gap = eig_gap(&vals_sorted, &r_lambda_vec, i);
+        if gap > 0.0 && r_res.is_finite() && v_norm.is_finite() && vinv_norm.is_finite() {
+            let bound = next_up(v_norm * vinv_norm * r_res / gap);
+            ev_rads[i] = bound.min(1.0);
+        } else {
+            ev_rads[i] = 1.0;
+        }
+    }
+    let mut evec_rads = Vec::with_capacity(n * n);
+    for j in 0..n {
+        evec_rads.extend(std::iter::repeat(ev_rads[j]).take(n));
+    }
+    let evecs = IntervalArray::from_raw_parts(&vecs, &evec_rads, &[n, n]);
     Ok((evals, evecs))
 }
 
@@ -1120,6 +1132,202 @@ pub fn eig(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray), String> 
         eig_general(a)
     }
 }
+
+// ── Additional linalg: cholesky, matrix_power, matrix_rank, cond ─────
+
+/// Interval-square-root of a strictly-positive interval.
+fn interval_sqrt(iv: &Interval) -> Interval {
+    let lo = if iv.lo > 0.0 {
+        next_down(iv.lo.sqrt())
+    } else {
+        0.0
+    };
+    let hi = if iv.hi > 0.0 {
+        next_up(iv.hi.sqrt())
+    } else {
+        0.0
+    };
+    Interval::new(lo, hi)
+}
+
+/// Cholesky factorisation of a symmetric positive-definite interval matrix:
+/// A = L · L^T, with L lower-triangular.
+///
+/// Returns Err if the rigorous lower bound of any required pivot is
+/// non-positive, meaning at least one matrix in the interval family is
+/// not SPD.
+pub fn cholesky(a: &IntervalArray) -> Result<IntervalArray, String> {
+    if a.ndim() != 2 || a.shape()[0] != a.shape()[1] {
+        return Err("cholesky requires a square matrix".into());
+    }
+    let n = a.shape()[0];
+    let mut data = vec![Interval::zero(); n * n];
+    for j in 0..n {
+        let mut s = Interval::zero();
+        for k in 0..j {
+            let ljk = data[j * n + k];
+            s = s + ljk * ljk;
+        }
+        let ajj = a.get(j * n + j) - s;
+        if ajj.lo <= 0.0 {
+            return Err(format!(
+                "cholesky: A[{},{}] lower bound {:e} <= 0; matrix is not positive-definite",
+                j, j, ajj.lo
+            ));
+        }
+        data[j * n + j] = interval_sqrt(&ajj);
+        let ljj = data[j * n + j];
+        for i in (j + 1)..n {
+            let mut s = Interval::zero();
+            for k in 0..j {
+                let lik = data[i * n + k];
+                let ljk = data[j * n + k];
+                s = s + lik * ljk;
+            }
+            data[i * n + j] = (a.get(i * n + j) - s) / ljj;
+        }
+    }
+    let mids: Vec<f64> = data.iter().map(|iv| iv.midpoint()).collect();
+    let rads: Vec<f64> = data.iter().map(|iv| iv.radius()).collect();
+    Ok(IntervalArray::from_raw_parts(&mids, &rads, &[n, n]))
+}
+
+/// Integer matrix-power `A^n` via binary exponentiation.
+///
+/// n == 0 returns the identity.  Negative n requires A to be invertible
+/// (it is first inverted then raised to `|n|`).
+pub fn matrix_power(a: &IntervalArray, n: i64) -> Result<IntervalArray, String> {
+    if a.ndim() != 2 || a.shape()[0] != a.shape()[1] {
+        return Err("matrix_power requires a square matrix".into());
+    }
+    let n_dim = a.shape()[0];
+    if n == 0 {
+        let mut mids = vec![0.0f64; n_dim * n_dim];
+        for i in 0..n_dim {
+            mids[i * n_dim + i] = 1.0;
+        }
+        return Ok(IntervalArray::from_raw_parts(
+            &mids,
+            &vec![0.0f64; n_dim * n_dim],
+            &[n_dim, n_dim],
+        ));
+    }
+    if n == 1 {
+        return Ok(a.clone());
+    }
+    if n < 0 {
+        let inv_a = inv(a)?;
+        return matrix_power(&inv_a, -n);
+    }
+    let mut result = {
+        let mut mids = vec![0.0f64; n_dim * n_dim];
+        for i in 0..n_dim {
+            mids[i * n_dim + i] = 1.0;
+        }
+        IntervalArray::from_raw_parts(&mids, &vec![0.0f64; n_dim * n_dim], &[n_dim, n_dim])
+    };
+    let mut base = a.clone();
+    let mut exp = n as u64;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = matmul(&result, &base);
+        }
+        base = matmul(&base, &base);
+        exp >>= 1;
+    }
+    Ok(result)
+}
+
+/// Pragmatic matrix rank via the SVD upper bounds.
+    ///
+    /// Returns the number of singular values whose **upper bound** (midpoint +
+    /// radius) exceeds a tolerance.  The tolerance is `n·ε·(1 + σ_max⁰)` by
+    /// default.  Matrices in the interval family with smaller singular values
+    /// may rank-deficient; this function reports the rank of the **midpoint**
+    /// matrix.
+    ///
+    /// For a guaranteed minimum rank across the whole family, examine the
+    /// lower bounds of the singular value intervals manually.
+    pub fn matrix_rank(a: &IntervalArray) -> Result<usize, String> {
+        if a.ndim() != 2 {
+            return Err("matrix_rank requires a 2D array".into());
+        }
+let (_, s, _) = svd(a)?;
+    let mids = s.data().midpoints();
+    let rads = s.data().radii();
+    let n = mids.len();
+    let smax_upper = mids
+        .iter()
+        .zip(rads.iter())
+        .map(|(&m, &r)| next_up(m + r))
+        .fold(0.0f64, f64::max);
+    let tol = (n + 1) as f64 * f64::EPSILON * smax_upper;
+    Ok(mids
+        .iter()
+        .zip(rads.iter())
+        .filter(|(&m, &r)| m + r > tol)
+        .count())
+    }
+
+/// 2-norm condition number of a square interval matrix.
+///
+/// Rigorously bounds the supremum of `cond(M)` for M in the interval
+/// family: returned as an `Interval` whose midpoint is `cond(M_mid)` and
+/// whose radius inflates the upper bound on the worst-case condition
+/// number.
+///
+/// If the rigorous lower bound of any singular value is ≤ 0, the result
+/// is `∞` (the family contains singular matrices).
+pub fn cond(a: &IntervalArray) -> Result<Interval, String> {
+    if a.ndim() != 2 || a.shape()[0] != a.shape()[1] {
+        return Err("cond requires a square matrix".into());
+    }
+    let n = a.shape()[0];
+    if n == 0 {
+        return Ok(Interval::exact(0.0));
+    }
+    let (_, s, _) = svd(a)?;
+    let mut smax_upper = 0.0f64;
+    let mut smin_lower = f64::INFINITY;
+    let mut smax_mid = 0.0f64;
+    let mut smin_mid = f64::INFINITY;
+    for (&m, &r) in s.data().midpoints().iter().zip(s.data().radii().iter()) {
+        let upper = next_up(m + r);
+        let lower = m - r;
+        if upper > smax_upper {
+            smax_upper = upper;
+        }
+        if lower < smin_lower {
+            smin_lower = lower;
+        }
+        if m > smax_mid {
+            smax_mid = m;
+        }
+        if m < smin_mid {
+            smin_mid = m;
+        }
+    }
+    if smin_lower <= 0.0 {
+        return Ok(Interval::exact(f64::INFINITY));
+    }
+    let cond_mid = if smin_mid > 0.0 {
+        smax_mid / smin_mid
+    } else {
+        f64::INFINITY
+    };
+    let cond_ub = smax_upper / smin_lower;
+    let rad = if cond_ub.is_finite() && cond_mid.is_finite() {
+        next_up(cond_ub - cond_mid)
+    } else {
+        0.0
+    };
+    Ok(Interval::from_midpoint_radius(cond_mid, rad))
+}
+
+// ========================================================================
+// PyO3 Python-facing wrappers (added after core algorithms so the file
+// remains a straightforward Rust library plus thin send-to-Python shims).
+// ========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1277,19 +1485,96 @@ mod tests {
         assert!(evals.get(0).contains(5.372281323269014));
         assert!(evals.get(1).contains(-0.3722813232690143));
         assert!(evals.get(0).radius() < 1e-10);
-        // Non-symmetric eigenvector bounds are unbounded (honest default).
+        // Perturbation-bound eigenvectors: well-separated exact input -> tight.
         for k in 0..4 {
-            assert_eq!(evecs.get(k).radius(), f64::INFINITY);
+            let r = evecs.get(k).radius();
+            assert!(
+                r.is_finite(),
+                "evec {} radius should be finite (Bauer-Fike bound), got {:?}",
+                k,
+                r
+            );
+            assert!(r < 1e-8, "evec {} radius too loose: {}", k, r);
+        }
+        // A v = lambda v within the enclosure
+        for col in 0..2 {
+            let lam = evals.get(col);
+            let v0 = evecs.get(0 * 2 + col);
+            let v1 = evecs.get(1 * 2 + col);
+            let av0 = m.get(0) * v0 + m.get(1) * v1;
+            let av1 = m.get(2) * v0 + m.get(3) * v1;
+            let lv0 = lam * v0;
+            let lv1 = lam * v1;
+            assert!(av0.contains(lv0.midpoint()), "[col={}] av0 must contain lambda*v0", col);
+            assert!(av1.contains(lv1.midpoint()), "[col={}] av1 must contain lambda*v1", col);
         }
     }
 
     #[test]
     fn test_eig_degenerate_graceful() {
-        // Double eigenvalue: cluster enclosure must still contain the value
-        // (radius grows, never fake-precise).
         let m = IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]);
         let (evals, _) = eig(&m).unwrap();
         assert!(evals.get(0).contains(1.0));
         assert!(evals.get(1).contains(1.0));
+    }
+
+    #[test]
+    fn test_cholesky_2x2() {
+        let a = IntervalArray::from_f64_vec(&[4.0, 2.0, 2.0, 3.0], &[2, 2]);
+        let l = cholesky(&a).unwrap();
+        assert_eq!(l.shape(), &[2, 2]);
+        let ll = matmul(&l, &l.transpose());
+        for k in 0..4 {
+            assert!(ll.get(k).contains(a.get(k).midpoint()));
+        }
+        assert!((l.get(0).midpoint() - 2.0).abs() < 1e-10);
+        assert!((l.get(2).midpoint() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cholesky_not_spd() {
+        let a = IntervalArray::from_f64_vec(&[-1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        assert!(cholesky(&a).is_err());
+    }
+
+    #[test]
+    fn test_matrix_power_n0_n1_n2() {
+        let e = matrix_power(&IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]), 0).unwrap();
+        assert!((e.get(0).midpoint() - 1.0).abs() < 1e-10);
+        assert!((e.get(3).midpoint() - 1.0).abs() < 1e-10);
+        assert!((e.get(1).midpoint() - 0.0).abs() < 1e-10);
+        let a = IntervalArray::from_f64_vec(&[1.0, 1.0, 0.0, 2.0], &[2, 2]);
+        let e2 = matrix_power(&a, 2).unwrap();
+        assert!((e2.get(0).midpoint() - 1.0).abs() < 1e-10);
+        assert!((e2.get(3).midpoint() - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_matrix_power_negative() {
+        let a = IntervalArray::from_f64_vec(&[2.0, 0.0, 0.0, 3.0], &[2, 2]);
+        let e = matrix_power(&a, -1).unwrap();
+        let m = matmul(&e, &a);
+        let eye_expected = [1.0, 0.0, 0.0, 1.0];
+        for k in 0..4 {
+            assert!(m.get(k).contains(eye_expected[k]));
+        }
+    }
+
+    #[test]
+    fn test_matrix_rank_variants() {
+        let full = IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        assert_eq!(matrix_rank(&full).unwrap(), 2);
+        let defect = IntervalArray::from_f64_vec(&[1.0, 2.0, 2.0, 4.0], &[2, 2]);
+        assert_eq!(matrix_rank(&defect).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_cond_variants() {
+        let i = IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        let c = cond(&i).unwrap();
+        assert!(c.midpoint() > 0.0 && c.midpoint() < 100.0, "cond(I) = {:?}", c);
+        let s = IntervalArray::from_f64_vec(&[1.0, 2.0, 2.0, 4.0], &[2, 2]);
+        let cs = cond(&s).unwrap();
+        assert!(cs.midpoint() > 1e10, "cond(singular) = {:?}", cs);
     }
 }

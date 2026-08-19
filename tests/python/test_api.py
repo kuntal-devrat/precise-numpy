@@ -736,9 +736,219 @@ class TestNumpyInterop(unittest.TestCase):
         self.assertEqual(a.radius(0), 0.0)
 
 
+class TestExtraLinalg(unittest.TestCase):
+    def test_cholesky_spd(self):
+        a = pnp.array([[4.0, 2.0], [2.0, 3.0]])
+        l = pnp.cholesky(a)
+        self.assertEqual(l.shape, (2, 2))
+        ll = pnp.matmul(l, l.transpose())
+        for k in range(4):
+            mid_ll = ll.values()[k]
+            mid_a = a.values()[k]
+            self.assertTrue(abs(mid_ll - mid_a) < 1e-10)
+        self.assertAlmostEqual(l.values()[0], 2.0)
+        self.assertAlmostEqual(l.values()[2], 1.0)
+
+    def test_cholesky_not_spd(self):
+        a = pnp.array([[-1.0, 0.0], [0.0, 1.0]])
+        with self.assertRaises(ValueError):
+            pnp.cholesky(a)
+
+    def test_matrix_power_n0(self):
+        a = pnp.eye(3)
+        e = pnp.matrix_power(a, 0)
+        self.assertEqual(e.shape, (3, 3))
+        for i in range(3):
+            self.assertAlmostEqual(e.values()[i * 3 + i], 1.0)
+
+    def test_matrix_power_n1(self):
+        a = pnp.array([[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(pnp.matrix_power(a, 1).values(), a.values())
+
+    def test_matrix_power_n2(self):
+        a = pnp.array([[1.0, 0.0], [0.0, 2.0]])
+        e = pnp.matrix_power(a, 2)
+        self.assertAlmostEqual(e.values()[3], 4.0)
+
+    def test_matrix_power_negative(self):
+        a = pnp.array([[2.0, 0.0], [0.0, 3.0]])
+        e = pnp.matrix_power(a, -1)
+        m = pnp.matmul(e, a)
+        expected = [1.0, 0.0, 0.0, 1.0]
+        for k in range(4):
+            self.assertTrue(m.values()[k] > expected[k] - 1e-10)
+            self.assertTrue(m.values()[k] < expected[k] + 1e-10)
+
+    def test_matrix_rank_full(self):
+        a = pnp.eye(3)
+        self.assertEqual(pnp.matrix_rank(a), 3)
+
+    def test_matrix_rank_defective(self):
+        a = pnp.array([[1.0, 2.0], [2.0, 4.0]])
+        self.assertEqual(pnp.matrix_rank(a), 1)
+
+    def test_cond_identity(self):
+        c = pnp.cond(pnp.eye(3))
+        self.assertTrue(0.0 < c[0] < 100.0)
+
+    def test_cond_singular(self):
+        a = pnp.array([[1.0, 2.0], [2.0, 4.0]])
+        c = pnp.cond(a)
+        self.assertTrue(c[0] > 1e10)
+
+
+class TestNumpyUfunc(unittest.TestCase):
+    def test_add_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0], error=0.01)
+        b = pnp.array([3.0, 4.0], error=0.01)
+        r = _np.add(a, b)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertEqual(r.shape, (2,))
+
+    def test_multiply_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([2.0, 3.0], error=0.01)
+        r = _np.multiply(a, 3.0)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertAlmostEqual(r.values()[0], 6.0)
+        self.assertAlmostEqual(r.values()[1], 9.0)
+
+    def test_negative_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([-1.0, 2.0], error=0.01)
+        r = _np.negative(a)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertAlmostEqual(r.values()[0], 1.0)
+        self.assertAlmostEqual(r.values()[1], -2.0)
+
+    def test_abs_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([-1.0, 2.0, -3.0])
+        r = _np.absolute(a)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertAlmostEqual(r.values()[0], 1.0)
+        self.assertAlmostEqual(r.values()[1], 2.0)
+        self.assertAlmostEqual(r.values()[2], 3.0)
+
+    def test_matmul_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([[1.0, 2.0], [3.0, 4.0]])
+        b = pnp.array([[5.0, 6.0], [7.0, 8.0]])
+        r = _np.matmul(a, b)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertAlmostEqual(r.values()[0], 19.0)
+
+    def test_exp_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([0.0, 1.0])
+        r = _np.exp(a)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertAlmostEqual(r.values()[0], 1.0)
+        self.assertAlmostEqual(r.values()[1], math.e)
+
+    def test_sqrt_ufunc(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 4.0, 9.0])
+        r = _np.sqrt(a)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        # mid=1, rad=0 for sqrt(1); mid should be 1.0, 2.0, 3.0
+        self.assertTrue(r.values()[0] > 0.99)
+        self.assertTrue(r.values()[1] > 1.99)
+        self.assertTrue(r.values()[2] > 2.99)
+
+
+class TestNumpyFunction(unittest.TestCase):
+    def test_np_linalg_norm(self):
+        import numpy as _np
+
+        a = pnp.array([[1.0, -2.0], [-3.0, 4.0]])
+        r = _np.linalg.norm(a)
+        self.assertAlmostEqual(r[0], math.sqrt(30.0))
+
+    def test_np_sum(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0, 3.0])
+        r = _np.sum(a)
+        self.assertAlmostEqual(r[0], 6.0)
+
+    def test_np_concatenate(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0])
+        b = pnp.array([3.0, 4.0])
+        c = _np.concatenate([a, b])
+        self.assertIsInstance(c, pnp.IntervalArray)
+        self.assertEqual(c.values(), [1.0, 2.0, 3.0, 4.0])
+
+    def test_np_stack(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0])
+        b = pnp.array([3.0, 4.0])
+        c = _np.stack([a, b])
+        self.assertIsInstance(c, pnp.IntervalArray)
+        self.assertEqual(c.shape, (2, 2))
+
+
+class TestNpyIO(unittest.TestCase):
+    def test_save_load_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "a.npy")
+            a = pnp.array([[1.5, 2.5], [3.5, 4.5]], error=0.1)
+            pnp.save_npy(path, a)
+            b = pnp.load_npy(path)
+        self.assertEqual(a.shape, b.shape)
+        for k in range(4):
+            self.assertAlmostEqual(a.values()[k], b.values()[k])
+            self.assertAlmostEqual(a.radii()[k], b.radii()[k])
+
+    def test_npy_with_np_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "a.npy")
+            a = pnp.array([10.0, 20.0], error=0.5)
+            pnp.save_npy(path, a)
+            import numpy as _np
+
+            raw = _np.load(path)
+        self.assertEqual(raw.shape, (2, 2))
+        self.assertTrue(_np.allclose(raw[..., 0], [10.0, 20.0]))
+        self.assertTrue(_np.allclose(raw[..., 1], [0.5, 0.5]))
+
+
+class TestAstype(unittest.TestCase):
+    def test_astype_none(self):
+        a = pnp.array([1.0, 2.0], error=0.1)
+        self.assertIs(pnp.astype(a, None), a)
+
+    def test_astype_float(self):
+        import numpy as _np
+
+        a = pnp.array([1.5, 2.5], error=0.1)
+        r = pnp.astype(a, float)
+        self.assertIsInstance(r, _np.ndarray)
+        self.assertTrue(_np.allclose(r, [1.5, 2.5]))
+
+    def test_astype_int(self):
+        import numpy as _np
+
+        a = pnp.array([1.6, 2.4], error=0.1)
+        r = pnp.astype(a, int)
+        self.assertIsInstance(r, _np.ndarray)
+        self.assertEqual(list(r), [1, 2])
+
+
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "0.2.3")
+        self.assertEqual(pnp.__version__, "0.2.4")
 
 
 if __name__ == "__main__":

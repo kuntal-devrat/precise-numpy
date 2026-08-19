@@ -2587,6 +2587,30 @@ fn svd<'py>(py: Python<'py>, a: &Bound<'py, PyIntervalArray>) -> PyResult<Py<PyA
         .into_any())
 }
 
+#[pyfunction]
+fn cholesky(a: &Bound<'_, PyIntervalArray>) -> PyResult<PyIntervalArray> {
+    let inner = linalg::cholesky(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    Ok(PyIntervalArray { inner })
+}
+
+#[pyfunction(signature = (a, n))]
+fn matrix_power(a: &Bound<'_, PyIntervalArray>, n: i64) -> PyResult<PyIntervalArray> {
+    let inner = linalg::matrix_power(&a.borrow().inner, n).map_err(|e| PyValueError::new_err(e))?;
+    Ok(PyIntervalArray { inner })
+}
+
+#[pyfunction]
+fn matrix_rank<'py>(py: Python<'py>, a: &Bound<'_, PyIntervalArray>) -> PyResult<Py<PyAny>> {
+    let rank = linalg::matrix_rank(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    Ok((rank as u64).to_object(py).into_any())
+}
+
+#[pyfunction]
+fn cond(a: &Bound<'_, PyIntervalArray>) -> PyResult<(f64, f64)> {
+    let iv = linalg::cond(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    Ok((iv.midpoint(), iv.radius()))
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // Module definition
 // ══════════════════════════════════════════════════════════════════════
@@ -2628,6 +2652,10 @@ fn _precise_numpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eig, m)?)?;
     m.add_function(wrap_pyfunction!(svd, m)?)?;
     m.add_function(wrap_pyfunction!(pinv, m)?)?;
-    m.add("__version__", "0.2.3")?;
+    m.add_function(wrap_pyfunction!(cholesky, m)?)?;
+    m.add_function(wrap_pyfunction!(matrix_power, m)?)?;
+    m.add_function(wrap_pyfunction!(matrix_rank, m)?)?;
+    m.add_function(wrap_pyfunction!(cond, m)?)?;
+    m.add("__version__", "0.2.4")?;
     Ok(())
 }

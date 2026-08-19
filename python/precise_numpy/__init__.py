@@ -48,8 +48,10 @@ from precise_numpy._precise_numpy import (
     eig,
     svd,
     pinv,
-    __version__,
-)
+__version__,
+    )
+
+import builtins
 
 import struct as _struct
 
@@ -90,6 +92,10 @@ from precise_numpy._precise_numpy import (
     eig,
     svd,
     pinv,
+    cholesky,
+    matrix_power,
+    matrix_rank,
+    cond,
     __version__,
 )
 
@@ -380,6 +386,10 @@ __all__ = [
     "eig",
     "svd",
     "pinv",
+    "cholesky",
+    "matrix_power",
+    "matrix_rank",
+    "cond",
     "save",
     "load",
     "savetxt",
@@ -430,4 +440,348 @@ __all__ = [
     "__version__",
     "to_numpy",
     "from_numpy",
+    "astype",
+    "save_npy",
+    "load_npy",
 ]
+
+# -----------------------------------------------------------------------
+# astype: convert IntervalArray to plain ndarray or keep interval view
+# -----------------------------------------------------------------------
+
+def astype(a, dtype=None):
+    """Convert an IntervalArray to another representation.
+
+    Parameters
+    ----------
+    a : IntervalArray or scalar-convertible.
+    dtype : numpy dtype or string, optional
+        - ``None`` / ``'interval64'`` / ``'interval'`` : returns the IntervalArray itself.
+        - ``float`` / ``np.float64`` etc. : returns a plain ndarray of midpoints.
+        - ``int`` / ``np.int64`` etc. : returns a plain ndarray of midpoints cast to int.
+
+    The radii are silently discarded when converting to a plain ndarray.
+    """
+    arr = _as_array(a)
+    if dtype is None:
+        return arr
+    try:
+        dt = _np.dtype(dtype)
+    except TypeError:
+        return arr
+    name = dt.name.lower()
+    if "interval" in name:
+        return arr
+    return _np.asarray(arr.values(), dtype=dt).reshape(arr.shape)
+
+
+# -----------------------------------------------------------------------
+# numpy-compatible I/O (.npy format: combined mid+rad array)
+# -----------------------------------------------------------------------
+
+def save_npy(fname, arr):
+    """Save an IntervalArray as a numpy ``.npy`` file.
+
+    The stored array has dtype float64 and shape ``(*shape, 2)`` where the
+    last dimension holds ``[midpoint, radius]``.  It can be loaded with
+    ``load_npy`` or inspected with ``np.load`` (midpoints are at index 0
+    along the last axis).
+    """
+    if not isinstance(arr, IntervalArray):
+        raise TypeError("save_npy requires an IntervalArray")
+    mids = _np.asarray(arr.values(), dtype=_np.float64).reshape(arr.shape)
+    rads = _np.asarray(arr.radii(), dtype=_np.float64).reshape(arr.shape)
+    combined = _np.stack([mids, rads], axis=-1)
+    _np.save(fname, combined)
+
+
+def load_npy(fname):
+    """Load an IntervalArray saved with ``save_npy``."""
+    combined = _np.load(fname)
+    if combined.ndim < 1 or combined.shape[-1] != 2:
+        raise ValueError("not a precise_numpy .npy file (last dim must be 2)")
+    shape = list(combined.shape[:-1])
+    mids = combined[..., 0].ravel().tolist()
+    rads = combined[..., 1].ravel().tolist()
+    return from_raw_parts(mids, rads, shape)
+
+
+# -----------------------------------------------------------------------
+# NumPy ufunc protocol (NEP-13): np.add, np.exp, np.sin, … on pnp arrays
+# -----------------------------------------------------------------------
+
+def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+    """Handle numpy ufunc calls involving IntervalArrays."""
+    if method != "__call__":
+        return NotImplemented
+    if kwargs.get("out", None) is not None:
+        return NotImplemented  # out= kwarg not yet supported
+    if kwargs.get("where", False) is not False:
+        return NotImplemented
+
+    name = ufunc.__name__
+
+    unary = {
+        "negative": lambda a: -a,
+        "positive": lambda a: a,
+        "absolute": lambda a: abs_(a),
+        "rint": lambda a: round_(a),
+        "sign": lambda a: sign(a),
+        "exp": lambda a: exp(a),
+        "exp2": lambda a: exp(a) ** 2,
+        "log": lambda a: ln(a),
+        "log2": lambda a: log2(a),
+        "log10": lambda a: log10(a),
+        "sqrt": lambda a: sqrt(a),
+        "sin": lambda a: sin(a),
+        "cos": lambda a: cos(a),
+        "tan": lambda a: tan(a),
+        "isnan": lambda a: isnan(a),
+        "isinf": lambda a: isinf(a),
+        "isfinite": lambda a: isfinite(a),
+    }
+
+    binary_fwd = {
+        "add": lambda a, b: a + b,
+        "subtract": lambda a, b: a - b,
+        "multiply": lambda a, b: a * b,
+        "true_divide": lambda a, b: a / b,
+        "divide": lambda a, b: a / b,
+        "power": lambda a, b: power(a, b),
+        "matmul": lambda a, b: matmul(a, b),
+    }
+
+    binary_rev = {
+        "add": lambda other, self: self + other,
+        "multiply": lambda other, self: self * other,
+        "subtract": lambda other, self: other - self,
+        "true_divide": lambda other, self: full(self.shape, float(other)) / self,
+        "divide": lambda other, self: full(self.shape, float(other)) / self,
+    }
+
+    if name in unary and len(inputs) == 1 and isinstance(inputs[0], IntervalArray):
+        return unary[name](inputs[0])
+
+    if len(inputs) != 2:
+        return NotImplemented
+
+    a, b = inputs
+    if isinstance(a, IntervalArray) and name in binary_fwd:
+        return binary_fwd[name](a, b)
+    if isinstance(b, IntervalArray) and isinstance(a, IntervalArray) and name in binary_fwd:
+        return binary_fwd[name](a, b)
+    if isinstance(b, IntervalArray) and name in binary_rev:
+        return binary_rev[name](a, b)
+
+    return NotImplemented
+
+
+IntervalArray.__array_ufunc__ = __array_ufunc__
+
+
+# -----------------------------------------------------------------------
+# NumPy function protocol (NEP-18): np.linalg.norm, np.concatenate, …
+# -----------------------------------------------------------------------
+
+_HANDLED_FUNCTIONS = {}
+
+
+def implements(numpy_function):
+    def decorator(implementation):
+        _HANDLED_FUNCTIONS[numpy_function] = implementation
+        return implementation
+
+    return decorator
+
+
+@implements(_np.linalg.norm)
+def _np_linalg_norm(x, ord=None, axis=None, keepdims=False):
+    if not isinstance(x, IntervalArray):
+        return NotImplemented
+    import precise_numpy.linalg as _la
+
+    result = _la.norm(x, ord=ord, axis=axis)
+    if keepdims and isinstance(result, IntervalArray):
+        # Make reduced dimensions size-1
+        if axis is None:
+            shape = [1] * x.ndim
+            return result.reshape(shape)
+        if isinstance(axis, (list, tuple)):
+            new_shape = list(x.shape)
+            for ax in axis:
+                new_shape[ax] = 1
+            return result.reshape(new_shape)
+        new_shape = list(x.shape)
+        new_shape[axis] = 1
+        return result.reshape(new_shape)
+    return result
+
+
+@implements(_np.linalg.det)
+def _np_linalg_det(x):
+    if not isinstance(x, IntervalArray):
+        return NotImplemented
+    return det(x)
+
+
+@implements(_np.linalg.inv)
+def _np_linalg_inv(x):
+    if not isinstance(x, IntervalArray):
+        return NotImplemented
+    return inv(x)
+
+
+@implements(_np.linalg.solve)
+def _np_linalg_solve(a, b):
+    if not isinstance(a, IntervalArray) and not isinstance(b, IntervalArray):
+        return NotImplemented
+    return solve(a, b)
+
+
+@implements(_np.linalg.lstsq)
+def _np_linalg_lstsq(a, b, rcond="warn"):
+    if not isinstance(a, IntervalArray) and not isinstance(b, IntervalArray):
+        return NotImplemented
+    return lstsq(a, b)
+
+
+@implements(_np.linalg.svd)
+def _np_linalg_svd(a, full_matrices=True, compute_uv=True, hermitian=False):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    if not full_matrices:
+        raise ValueError("precise_numpy only supports full_matrices=True for svd")
+    u, s, vt = svd(a)
+    if not compute_uv:
+        return s
+    return u, s, vt
+
+
+@implements(_np.linalg.eig)
+def _np_linalg_eig(a):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    return eig(a)
+
+
+@implements(_np.linalg.pinv)
+def _np_linalg_pinv(a, rcond=1e-15, hermitian=False):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    return pinv(a)
+
+
+@implements(_np.concatenate)
+def _np_concatenate(arrays, axis=0, out=None, dtype=None, casting="same_kind"):
+    if out is not None or dtype is not None:
+        return NotImplemented
+    arys = [arr if isinstance(arr, IntervalArray) else array(arr) for arr in arrays]
+    return concatenate(arys, axis=axis)
+
+
+@implements(_np.stack)
+def _np_stack(arrays, axis=0, out=None, dtype=None, casting="same_kind"):
+    if out is not None or dtype is not None:
+        return NotImplemented
+    arys = [arr if isinstance(arr, IntervalArray) else array(arr) for arr in arrays]
+    return stack(arys, axis=axis)
+
+
+@implements(_np.sum)
+def _np_sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=True):
+    if out is not None or dtype is not None or initial is not None:
+        return NotImplemented
+    if where is not True:
+        return NotImplemented
+    return sum_(a, axis=axis)
+
+
+@implements(_np.mean)
+def _np_mean(a, axis=None, dtype=None, out=None, keepdims=False, where=True):
+    if out is not None or dtype is not None:
+        return NotImplemented
+    return mean(a, axis=axis)
+
+
+@implements(_np.max)
+def _np_max(a, axis=None, out=None, keepdims=False, initial=None, where=True):
+    if out is not None or initial is not None:
+        return NotImplemented
+    return max(a, axis=axis)
+
+
+@implements(_np.min)
+def _np_min(a, axis=None, out=None, keepdims=False, initial=None, where=True):
+    if out is not None or initial is not None:
+        return NotImplemented
+    return min(a, axis=axis)
+
+
+@implements(_np.all)
+def _np_all(a, axis=None, out=None, keepdims=False, where=True):
+    if out is not None:
+        return NotImplemented
+    return all(a, axis=axis)
+
+
+@implements(_np.any)
+def _np_any(a, axis=None, out=None, keepdims=False, where=True):
+    if out is not None:
+        return NotImplemented
+    return any(a, axis=axis)
+
+
+@implements(_np.transpose)
+def _np_transpose(a, axes=None):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    return a.transpose()
+
+
+@implements(_np.reshape)
+def _np_reshape(a, newshape, order="C"):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    if isinstance(newshape, int):
+        newshape = (newshape,)
+    return reshape(a, *newshape)
+
+
+@implements(_np.squeeze)
+def _np_squeeze(a, axis=None):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    if axis is None:
+        return a.reshape([d for d in a.shape if d != 1])
+    return a.reshape([1 if i == axis else d for i, d in enumerate(a.shape) if not (i == axis and d == 1)])
+
+
+@implements(_np.expand_dims)
+def _np_expand_dims(a, axis):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    shape = list(a.shape)
+    if axis < 0:
+        axis += len(shape) + 1
+    shape.insert(axis, 1)
+    return a.reshape(shape)
+
+
+@implements(_np.rollaxis)
+def _np_rollaxis(a, axis, start=0):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    # simplified: just use transpose for single-axis roll
+    return a.transpose()
+
+
+def __array_function__(self, func, types, args, kwargs):
+    """NEP-18: handle numpy function calls on IntervalArrays."""
+    if not builtins.all(issubclass(t, IntervalArray) for t in types):
+        return NotImplemented
+    if func not in _HANDLED_FUNCTIONS:
+        return NotImplemented
+    return _HANDLED_FUNCTIONS[func](*args, **kwargs)
+
+
+IntervalArray.__array_function__ = __array_function__
