@@ -364,6 +364,38 @@ class TestReductions(unittest.TestCase):
         self.assertAlmostEqual(a.norm()[0], math.sqrt(14.0))
         self.assertEqual(pnp.norm(a)[0], math.sqrt(14.0))
 
+    def test_tolist_nested(self):
+        a = pnp.array([[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(a.tolist(), [[(1.0, 0.0), (2.0, 0.0)], [(3.0, 0.0), (4.0, 0.0)]])
+        b = pnp.zeros([2, 2, 2])
+        self.assertEqual(len(b.tolist()), 2)
+        self.assertEqual(len(b.tolist()[0][0]), 2)
+        c = pnp.arange(0.0, 3.0, 1.0)
+        self.assertEqual(c.tolist(), [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+        self.assertEqual(pnp.zeros([0]).tolist(), [])
+
+    def test_norm_ord_axis(self):
+        import precise_numpy.linalg as la
+
+        a = pnp.array([[1.0, -2.0], [-3.0, 4.0]])
+        self.assertAlmostEqual(la.norm(a)[0], math.sqrt(30.0))
+        self.assertAlmostEqual(la.norm(a, ord=1)[0], 6.0)
+        self.assertAlmostEqual(la.norm(a, ord=-1)[0], 4.0)
+        self.assertAlmostEqual(la.norm(a, ord=float("inf"))[0], 7.0)
+        self.assertAlmostEqual(la.norm(a, ord=float("-inf"))[0], 3.0)
+        self.assertAlmostEqual(la.norm(a, ord=2)[0], math.sqrt(15.0 + math.sqrt(221.0)))
+        self.assertAlmostEqual(la.norm(a, ord="nuc")[0], math.sqrt(15.0 + math.sqrt(221.0)) + math.sqrt(15.0 - math.sqrt(221.0)))
+        v = pnp.array([3.0, -4.0])
+        self.assertAlmostEqual(la.norm(v)[0], 5.0)
+        self.assertAlmostEqual(la.norm(v, ord=1)[0], 7.0)
+        self.assertAlmostEqual(la.norm(v, ord=float("inf"))[0], 4.0)
+        r = la.norm(a, axis=0)
+        self.assertEqual(r.shape, (2,))
+        self.assertAlmostEqual(r.values()[0], math.sqrt(10.0))
+        self.assertAlmostEqual(r.values()[1], math.sqrt(20.0))
+        self.assertAlmostEqual(la.norm(a, ord=1, axis=1).values()[0], 3.0)
+        self.assertAlmostEqual(la.norm(a, ord=float("inf"), axis=1).values()[1], 4.0)
+
     def test_empty_array(self):
         z = pnp.zeros([0])
         self.assertTrue(z.is_empty())
@@ -605,7 +637,9 @@ class TestRandom(unittest.TestCase):
 
         pr.seed(7)
         self.assertTrue(isinstance(pr.rand(), float))
-        self.assertTrue(isinstance(pr.randint(0, 10), float))
+        self.assertTrue(isinstance(pr.randint(0, 10), int))
+        v = pr.randint(-5, 5)
+        self.assertTrue(-5 <= v < 5)
 
 
 class TestFileIO(unittest.TestCase):
@@ -637,9 +671,74 @@ class TestFileIO(unittest.TestCase):
                 pnp.load(path)
 
 
+class TestNumpyInterop(unittest.TestCase):
+    def test_array_protocol(self):
+        import numpy as _np
+
+        import precise_numpy as _pnp
+
+        a = _pnp.array([[1.5, 2.5], [3.5, 4.5]], error=0.1)
+        x = _np.asarray(a)
+        expected = _np.array([[1.5, 2.5], [3.5, 4.5]])
+        self.assertEqual(x.shape, (2, 2))
+        self.assertTrue(
+            _np.allclose(x, expected),
+            "np.asarray should return midpoints with shape preserved",
+        )
+
+    def test_array_protocol_dtype(self):
+        import numpy as _np
+
+        import precise_numpy as _pnp
+
+        a = _pnp.array([1.25])
+        x = _np.asarray(a, dtype=_np.float32)
+        self.assertEqual(x.dtype, _np.float32)
+        self.assertAlmostEqual(float(x.flat[0]), 1.25)
+
+    def test_to_numpy(self):
+        import numpy as _np
+
+        import precise_numpy as _pnp
+
+        a = _pnp.zeros([3])
+        x = _pnp.to_numpy(a)
+        self.assertIsInstance(x, _np.ndarray)
+        self.assertEqual(list(x.shape), [3])
+        z = _pnp.to_numpy(_pnp.zeros([2, 2]))
+        self.assertEqual(list(z.shape), [2, 2])
+
+    def test_from_numpy_scalar_error(self):
+        import numpy as _np
+
+        import precise_numpy as _pnp
+
+        x = _np.array([1.0, 2.0, 3.0])
+        a = _pnp.from_numpy(x, error=0.01)
+        self.assertEqual(a.shape, (3,))
+        self.assertEqual(a.values(), [1.0, 2.0, 3.0])
+        self.assertEqual(a.radii(), [0.01, 0.01, 0.01])
+
+    def test_from_numpy_array_error(self):
+        import numpy as _np
+
+        import precise_numpy as _pnp
+
+        x = _np.array([[1.0, 4.0], [9.0, 16.0]])
+        rads = [0.1, 0.2, 0.3, 0.4]
+        a = _pnp.from_numpy(x, error=rads)
+        self.assertEqual(a.radii(), rads)
+
+    def test_from_numpy_default(self):
+        import precise_numpy as _pnp
+
+        a = _pnp.from_numpy([7.0])
+        self.assertEqual(a.radius(0), 0.0)
+
+
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "0.2.2")
+        self.assertEqual(pnp.__version__, "0.2.3")
 
 
 if __name__ == "__main__":

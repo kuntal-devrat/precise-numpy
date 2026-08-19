@@ -259,7 +259,6 @@ where
 {
     use rayon::prelude::*;
 
-    let n = a.len();
     let mids = a.data().midpoints();
     let rads = a.data().radii();
 

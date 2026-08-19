@@ -53,6 +53,46 @@ from precise_numpy._precise_numpy import (
 
 import struct as _struct
 
+import numpy as _np
+
+from precise_numpy._precise_numpy import (
+    BoolArray,
+    IntervalArray,
+    array,
+    zeros,
+    ones,
+    empty,
+    full,
+    eye,
+    identity,
+    diag,
+    linspace,
+    arange,
+    concatenate,
+    stack,
+    vstack,
+    hstack,
+    split,
+    where_impl,
+    from_raw_parts,
+    num_threads,
+    seed,
+    rand,
+    random_sample,
+    randn,
+    randint,
+    uniform,
+    normal,
+    det,
+    inv,
+    solve,
+    lstsq,
+    eig,
+    svd,
+    pinv,
+    __version__,
+)
+
 
 def _as_array(x):
     """Coerce an IntervalArray, scalar, or (midpoint, radius) tuple."""
@@ -61,6 +101,58 @@ def _as_array(x):
     if isinstance(x, (tuple, list)):
         return array(x)
     return array([x])
+
+
+# -----------------------------------------------------------------------
+# NumPy interop (NEP18): np.asarray(IntervalArray) returns midpoints.
+# -----------------------------------------------------------------------
+
+def _to_numpy(self, dtype=None):
+    """NEP18 __array__ protocol: convert midpoints to a numpy ndarray."""
+    import numpy as _np
+
+    return _np.asarray(self.values(), dtype=dtype).reshape(self.shape)
+
+
+IntervalArray.__array__ = _to_numpy
+
+
+def to_numpy(a, dtype=None):
+    """Explicit conversion: IntervalArray -> numpy ndarray (midpoints).
+
+    Parameters
+    ----------
+    a : IntervalArray or scalar-convertible.
+    dtype : numpy dtype, optional
+        Passed to ``numpy.asarray``. Defaults to float64.
+    """
+    arr = _as_array(a)
+    return _np.asarray(arr.values(), dtype=dtype).reshape(arr.shape)
+
+
+def from_numpy(x, error=0.0):
+    """Convert a numpy ndarray (or array-like) to an IntervalArray.
+
+    The returned array stores ``x``'s values as midpoints.  ``error`` may
+    be a scalar (uniform radius) or a broadcastable array of radii.
+
+    Parameters
+    ----------
+    x : array-like or scalar.
+    error : float or array-like, optional
+        Uniform (scalar) or per-element radius to add.
+    """
+    import numpy as _np
+
+    x = _np.asarray(x, dtype=_np.float64)
+    mids = x.ravel().tolist()
+    n = x.size
+    if hasattr(error, "__iter__") and not isinstance(error, str):
+        arr = _np.asarray(error, dtype=float)
+        rads = arr.reshape(x.shape).ravel().tolist()
+    else:
+        rads = [float(error)] * n
+    return from_raw_parts(mids, rads, list(x.shape))
 
 
 def asarray(a, error=0.0):
@@ -336,4 +428,6 @@ __all__ = [
     "all",
     "any",
     "__version__",
+    "to_numpy",
+    "from_numpy",
 ]

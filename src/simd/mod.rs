@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Runtime CPU feature detection and SIMD kernel dispatch.
 /// Supports AVX-512 (8-wide f64), AVX2/FMA (4-wide f64), ARM NEON, and fallback.
 

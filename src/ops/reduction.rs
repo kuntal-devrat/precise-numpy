@@ -204,11 +204,64 @@ pub fn prod(a: &IntervalArray) -> Interval {
     result
 }
 
+/// Run `matrixmultiply::dgemm` over a parallel row-block decomposition.
+/// Same semantics as `dgemm(C = alpha*A*B)` for row-major M×K · K×N.
+#[inline]
+fn parallel_dgemm(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], out: &mut [f64]) {
+    if m == 0 || n == 0 {
+        return;
+    }
+    if m >= 256 {
+        let row_chunk_size = 64;
+        out.par_chunks_mut(row_chunk_size * n)
+            .enumerate()
+            .for_each(|(chunk_idx, m_chunk)| {
+                let row_start = chunk_idx * row_chunk_size;
+                let current_m = m_chunk.len() / n;
+                let a_ptr = unsafe { a.as_ptr().add(row_start * k) };
+                unsafe {
+                    matrixmultiply::dgemm(
+                        current_m, k, n,
+                        1.0,
+                        a_ptr, k as isize, 1,
+                        b.as_ptr(), n as isize, 1,
+                        0.0,
+                        m_chunk.as_mut_ptr(), n as isize, 1,
+                    );
+                }
+            });
+    } else {
+        unsafe {
+            matrixmultiply::dgemm(
+                m, k, n,
+                1.0,
+                a.as_ptr(), k as isize, 1,
+                b.as_ptr(), n as isize, 1,
+                0.0,
+                out.as_mut_ptr(), n as isize, 1,
+            );
+        }
+    }
+}
+
 /// Multi-threaded Parallel GEMM matrix multiplication (`matrixmultiply`).
 ///
 /// a: [M, K], b: [K, N] -> result: [M, N]
 ///
-/// Uses parallel row-block decomposition over Rayon threads + assembly GEMM microkernels.
+/// The midpoint is a plain dgemm. The radius is built from four rigorous
+/// pieces computed with the same assembly microkernels:
+///
+///   rad[i, j] = Σ_t (|a|_it·rad_b_tj + rad_a_it·|b|_tj + rad_a_it·rad_b_tj
+///                    + |e1_itj| + |e2_itj|)
+///
+/// where e1/e2 are the exact product and summation rounding errors. Since
+/// every term is non-negative, any round-to-nearest summation tree (dgemm
+/// reassociates freely) underestimates the exact sum by at most
+/// `k·2⁻⁵³` relative. We bound the error term by
+/// `Σ|e1| + Σ|e2| ≤ 2⁻⁵³·(1 + k)·Σ_t |a|_it·|b|_tj` (standard TwoSum
+/// partial-sum bound), computed as a third dgemm on the absolute values.
+/// A single final outward inflation `(1 + 8k·2⁻⁵²)` then covers every
+/// rounding along the chain, and `next_up` closes the last one.
 pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     assert_eq!(a.ndim(), 2, "matmul requires 2D arrays");
     assert_eq!(b.ndim(), 2, "matmul requires 2D arrays");
@@ -234,83 +287,44 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
         return IntervalArray::zeros(&[m, n]);
     }
 
+    // Absolute values of the midpoints (needed for the radius terms).
+    let a_abs: Vec<f64> = a_mids.iter().map(|&x| x.abs()).collect();
+    let b_abs: Vec<f64> = b_mids.iter().map(|&x| x.abs()).collect();
+
     let mut r_mids = vec![0.0f64; m * n];
     let mut r_rads = vec![0.0f64; m * n];
+    let mut t_ab = vec![0.0f64; m * n];
+    let mut t_ba = vec![0.0f64; m * n];
+    let mut t_abs = vec![0.0f64; m * n];
 
-    // Use parallel row-block decomposition only for larger matrices (M >= 256)
-    if m >= 256 {
-        let row_chunk_size = 64;
-        r_mids.par_chunks_mut(row_chunk_size * n)
-            .enumerate()
-            .for_each(|(chunk_idx, m_chunk)| {
-                let row_start = chunk_idx * row_chunk_size;
-                let current_m = m_chunk.len() / n;
+    parallel_dgemm(m, k, n, a_mids, b_mids, &mut r_mids);
+    parallel_dgemm(m, k, n, &a_abs, b_rads, &mut t_ab);
+    parallel_dgemm(m, k, n, a_rads, &b_abs, &mut t_ba);
+    parallel_dgemm(m, k, n, &a_abs, &b_abs, &mut t_abs);
 
-                let a_mid_ptr = unsafe { a_mids.as_ptr().add(row_start * k) };
-
-                unsafe {
-                    matrixmultiply::dgemm(
-                        current_m, k, n,
-                        1.0,
-                        a_mid_ptr, k as isize, 1,
-                        b_mids.as_ptr(), n as isize, 1,
-                        0.0,
-                        m_chunk.as_mut_ptr(), n as isize, 1,
-                    );
-                }
-            });
-    } else {
-        unsafe {
-            matrixmultiply::dgemm(
-                m, k, n,
-                1.0,
-                a_mids.as_ptr(), k as isize, 1,
-                b_mids.as_ptr(), n as isize, 1,
-                0.0,
-                r_mids.as_mut_ptr(), n as isize, 1,
-            );
-        }
+    // Σ_t rad_a_t·rad_b_t: constant for every output element (RTN, then
+    // inflated like the dgemm results below).
+    let mut s_acc = 0.0f64;
+    for t in 0..k {
+        s_acc = s_acc + a_rads[t] * b_rads[t];
     }
+    s_acc = next_up(s_acc * (1.0 + k as f64 * 2f64.powi(-53)));
 
-    // Rigorous radius pass: for every output element recompute the dot
-    // product with TwoSum error tracking (the dgemm midpoint is only used
-    // as the center; the radius encloses every rounding along the chain).
-    // The per-product errors are accumulated inline, so no per-element
-    // scratch buffers are needed. Output elements are independent, so the
-    // pass is parallelized over rows.
-    r_rads.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
-        let a_row = i * k;
-        for j in 0..n {
-            let mut s = 0.0f64;
-            let mut rad = 0.0f64;
-            for t in 0..k {
-                let am = a_mids[a_row + t];
-                let ar = a_rads[a_row + t];
-                let bm = b_mids[t * n + j];
-                let br = b_rads[t * n + j];
-                let p = am * bm;
-                let e1 = if p.is_finite() {
-                    am.mul_add(bm, -p).abs()
-                } else {
-                    f64::INFINITY
-                };
-                let nt = s + p;
-                let e2 = twosum_err(s, p, nt);
-                s = nt;
-                rad = add_ru_chain(
-                    add_ru_chain(
-                        add_ru_chain(
-                            add_ru_chain(rad, mul_ru(am.abs(), br)),
-                            mul_ru(bm.abs(), ar),
-                        ),
-                        mul_ru(ar, br),
-                    ),
-                    add_ru_chain(e1, e2.abs()),
-                );
-            }
-            row[j] = rad;
+    // Error-term coefficient and final inflation factor (see doc comment).
+    let err_c = 2f64.powi(-53) * (k as f64 + 1.0);
+    let inflate = 1.0 + 8.0 * k as f64 * 2f64.powi(-52);
+
+    for idx in 0..m * n {
+        let mid = r_mids[idx];
+        let mut rad = (t_ab[idx] + t_ba[idx]) + (s_acc + err_c * t_abs[idx]);
+        rad = next_up(rad * inflate);
+        // Overflow/NaN anywhere in the chain: the interval becomes the
+        // entire real line rather than an unsound finite enclosure.
+        if !rad.is_finite() || !mid.is_finite() {
+            rad = f64::INFINITY;
         }
-    });
+        r_rads[idx] = rad;
+    }
 
     IntervalArray::from_raw_parts(&r_mids, &r_rads, &[m, n])
 }

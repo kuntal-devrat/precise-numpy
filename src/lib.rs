@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables)]
+
 use pyo3::exceptions::{
     PyIndexError, PyNotImplementedError, PyRuntimeWarning, PyTypeError, PyValueError,
 };
@@ -28,6 +30,31 @@ struct PyIntervalArray {
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────
+
+/// Build a nested Python list matching `shape` from a flat slice of values
+/// (numpy `tolist()` semantics).
+fn build_nested_lists<'py>(
+    py: Python<'py>,
+    flat: &[(f64, f64)],
+    shape: &[usize],
+    offset: &mut usize,
+) -> PyResult<Py<PyAny>> {
+    if shape.len() <= 1 {
+        let items: Vec<Py<PyAny>> = (0..shape.first().copied().unwrap_or(0))
+            .map(|_| {
+                let (m, r) = flat[*offset];
+                *offset += 1;
+                PyTuple::new_bound(py, [m, r]).unbind().into_any()
+            })
+            .collect();
+        return Ok(PyList::new_bound(py, items).into_any().unbind());
+    }
+    let mut items: Vec<Py<PyAny>> = Vec::with_capacity(shape[0]);
+    for _ in 0..shape[0] {
+        items.push(build_nested_lists(py, flat, &shape[1..], offset)?);
+    }
+    Ok(PyList::new_bound(py, items).into_any().unbind())
+}
 
 fn warn_div_zero(py: Python<'_>) -> PyResult<()> {
     let category = py.get_type_bound::<PyRuntimeWarning>();
@@ -1803,11 +1830,13 @@ impl PyIntervalArray {
         PyBoolArray::new(compare::is_finite_array(&self.inner))
     }
 
-    fn tolist(&self) -> Vec<(f64, f64)> {
-        let n = self.inner.len();
+    fn tolist<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let shape = self.inner.shape().to_vec();
         let mids = self.inner.data().midpoints();
         let rads = self.inner.data().radii();
-        (0..n).map(|i| (mids[i], rads[i])).collect()
+        let flat: Vec<(f64, f64)> = (0..self.inner.len()).map(|i| (mids[i], rads[i])).collect();
+        let mut offset = 0usize;
+        Ok(build_nested_lists(py, &flat, &shape, &mut offset)?)
     }
 
     fn values(&self) -> Vec<f64> {
@@ -2424,7 +2453,7 @@ fn randint(
     }
     let shape = random_shape(size, extra)?;
     if shape.is_empty() {
-        return Ok((random::random_int(low, high) as f64).to_object(py).into_any());
+        return Ok(random::random_int(low, high).to_object(py).into_any());
     }
     let arr = random::randint_array(low, high, &shape);
     Ok(Py::new(py, PyIntervalArray { inner: arr })?.into_any())
@@ -2599,6 +2628,6 @@ fn _precise_numpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eig, m)?)?;
     m.add_function(wrap_pyfunction!(svd, m)?)?;
     m.add_function(wrap_pyfunction!(pinv, m)?)?;
-    m.add("__version__", "0.2.2")?;
+    m.add("__version__", "0.2.3")?;
     Ok(())
 }

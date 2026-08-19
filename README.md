@@ -4,7 +4,7 @@
 
   # precise-numpy
 
-  **Interval arithmetic with guaranteed error bounds for Python, powered by Rust SIMD.**
+  **Interval arithmetic with guaranteed error bounds for Python, powered by Rust.**
 
   [![PyPI Version](https://img.shields.io/pypi/v/precise-numpy.svg?color=007ec6)](https://pypi.org/project/precise-numpy/)
   [![Python Versions](https://img.shields.io/pypi/pyversions/precise-numpy.svg?color=3776ab)](https://pypi.org/project/precise-numpy/)
@@ -27,9 +27,9 @@ intervals behave differently from plain floats (see [Semantics](#semantics)). It
 NumPy-flavored API for interval arithmetic.
 
 Key capabilities:
-- **Hardware-directed rounding** for guaranteed mathematical enclosures.
-- **Rust SIMD acceleration** (AVX-512, AVX2/FMA, NEON) with Rayon parallelism.
-- **NumPy-like API**: creation, indexing, broadcasting, reductions, stacking, linalg, random, I/O.
+- **Hardware-directed rounding** (`MXCSR` on x86_64) for guaranteed mathematical enclosures.
+- **Parallel GEMM microkernels** (assembly dgemm via `matrixmultiply`) + Rayon for the midpoint pass; the radius pass is a branch-free RTN accumulation partitioned across the same thread pool.
+- **NumPy-like API**: creation, indexing, broadcasting, reductions, stacking, linalg (rigorous eig/svd/pinv plus interval LU solve), random, I/O.
 - **GIL release** during long computations.
 
 ---
@@ -98,12 +98,19 @@ print("max relative error:", c.max_relative_error())
 `array(values, error=0.0)`, `asarray`, `zeros(shape)`, `ones`, `empty`, `full(shape, value, error=0.0)`,
 `eye(n, m=None, k=0)`, `identity(n)`, `diag(v)`, `arange(start, stop, step=1.0)`,
 `linspace(start, stop, num=50, endpoint=True)`, `from_raw_parts(midpoints, radii, shape)`.
+`empty(shape)` deliberately zeros memory: uninitialised radii would break the rigorous
+enclosure guarantee (zeros + zero radius = exact zeros, a sound result for any operation).
+`to_numpy(a, dtype=None)` and `from_numpy(a, error=scalar_or_array)` convert between
+IntervalArrays and NumPy ndarrays.
 
 ### Properties & conversions
 
-`shape`, `ndim`, `size`, `dtype`, `itemsize`, `nbytes`, `strides`, `t`,
+`shape`, `ndim`, `size`, `dtype` (`"interval64"`), `itemsize` (16), `nbytes`, `strides`, `t`,
 `values()`, `radii()`, `tolist()`, `get(i)`, `item(i)`, `midpoint(i)`, `radius(i)`,
 `copy()`, `flatten()`, `ravel()`, `reshape(*shape)`, `transpose()`, `sort()`, `argsort()`.
+`__array__(dtype=None)` (NEP18) — returns a plain `float64` ndarray of midpoints so
+`np.asarray(pnp_array)` and `np + pnp_array` work naturally. Use `to_numpy()` explicitly;
+convert back with `from_numpy(np_array, error=...)`.
 
 ### Indexing
 
@@ -125,7 +132,8 @@ clip(a_min, a_max), sign, nan_to_num, power(x, y), maximum(x, y), minimum(x, y)`
 ### Reductions
 
 `sum, mean, prod, var, std, min, max, argmin, argmax, all, any` — each with an optional
-`axis`; plus `min_val()`, `max_val()`, `cumsum(axis=None)`, `norm()` (L2).
+`axis`; plus `min_val()`, `max_val()`, `cumsum(axis=None)`, `norm(ord=None, axis=None)`
+with numpy-compatible `ord` in {None/2/'fro', 1, -1, inf, -inf, 'nuc'} and int `axis`.
 
 ### Stacking & selection
 
@@ -136,10 +144,7 @@ clip(a_min, a_max), sign, nan_to_num, power(x, y), maximum(x, y), minimum(x, y)`
 
 `det`, `inv`, `solve(A, b)`, `lstsq(A, b)`, `pinv`, `eig`, `svd`, `norm`.
 
-Notes: `eig` (symmetric, Jacobi) and `eig_general`-style Hessenberg QR with real
-eigenvalues only — complex pairs raise `NotImplementedError`/`ValueError`. `svd` returns
-the thin decomposition `U (m, k), s (k,), Vh (k, n)` with `k = min(m, n)`. All linalg
-routines operate on midpoints (radius 0 results) except `solve`, which uses interval LU.
+Notes: `eig`/`eig_general` returns real numbers. `eig_symmetric` (Jacobi) returns rigorous eigenvalue and eigenvector enclosures. `eig_general` (Hessenberg QR) returns rigorous eigenvalue radii; eigenvector radii are returned as `inf` because the true eigenspace width is unbounded without symmetry (sound but conservative). `svd` returns rigorous singular value and singular vector enclosures (Davis–Kahan). `pinv` is rigorous via interval reciprocals of singular values. `solve` uses rigorous LU+forward/back substitution.
 
 ### Random (`precise_numpy.random`)
 
@@ -177,23 +182,30 @@ See [`examples/quantization_safety_audit.py`](examples/quantization_safety_audit
 
 ## Performance Notes
 
-Each element stores two `f64` values and each op enforces directed rounding, so the library
-is roughly 1.1x–1.7x slower than plain NumPy element-wise ops on large arrays while
-tracking rigorous error bounds — and it is often faster than NumPy on small arrays because
-the PyO3 extension avoids per-call Python dispatch overhead. See
-[`examples/full_benchmark.py`](examples/full_benchmark.py).
+Element-wise ops with zero input radii (`error=0.0`) are ~1.1–2× the cost of equivalent
+NumPy element-wise work because each arithmetic step rounds up the enclosure radius.
+`matmul` (1000×1000) runs in ~0.14s in release mode with four lightweight `dgemm`-based
+radius passes; plain NumPy/OpenBLAS is ~0.02s on the same machine but carries no error
+bound. Operation counts for the radius pass are strictly larger than the midpoint pass,
+which is why rigorous bounds cost more than plain FP multiplication.
+
+When inputs have non-zero radii (`error=1e-4`, etc.) the relative price of the radius pass
+does not grow; it is purely a function of `M×N×K`.
 
 ---
 
 ## Technical Architecture
 
-1. **Structure-of-Arrays (SoA) buffer**: midpoints and radii in contiguous, 64-byte aligned
-   memory (`AlignedBuffer`), enabling direct SIMD loads.
-2. **Single-pass streaming SIMD**: radius bounds fused into one pass over both buffers
-   (AVX-512, AVX2+FMA, NEON).
+1. **Structure-of-Arrays (SoA) buffer**: midpoints and radii stored in 64-byte aligned
+   contiguous memory for efficient cache-line loads.
+2. **Two-pass matmul**: the midpoint pass is a single `dgemm` call (assembly GEMM microkernels
+   via `matrixmultiply`); the radius pass is a branch-free round-to-nearest accumulation
+   split into three additional `dgemm` calls plus a scalar inflation factor (`O(1)` per
+   element), executed on the same thread pool.
 3. **Shared buffers**: `IntervalArray` clones, slices, and reshapes are O(1) reference-counted.
 4. **GIL release**: long-running kernels run under `py.allow_threads()` with Rayon parallelism.
-5. **No external dependencies at runtime**; pure Rust + pyo3.
+5. **No external dependencies at runtime**; pure Rust + pyo3. (NumPy is an optional test
+   dependency only.)
 
 ---
 
