@@ -948,7 +948,7 @@ class TestAstype(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "0.2.4")
+        self.assertEqual(pnp.__version__, "0.2.5")
 
 
 if __name__ == "__main__":

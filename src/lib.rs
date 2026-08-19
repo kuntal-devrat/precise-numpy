@@ -2656,6 +2656,6 @@ fn _precise_numpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(matrix_power, m)?)?;
     m.add_function(wrap_pyfunction!(matrix_rank, m)?)?;
     m.add_function(wrap_pyfunction!(cond, m)?)?;
-    m.add("__version__", "0.2.4")?;
+    m.add("__version__", "0.2.5")?;
     Ok(())
 }
