@@ -557,6 +557,7 @@ def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         "subtract": lambda other, self: other - self,
         "true_divide": lambda other, self: full(self.shape, float(other)) / self,
         "divide": lambda other, self: full(self.shape, float(other)) / self,
+        "power": lambda other, self: power(self, other),
     }
 
     if name in unary and len(inputs) == 1 and isinstance(inputs[0], IntervalArray):
@@ -664,6 +665,22 @@ def _np_linalg_eig(a):
     return eig(a)
 
 
+@implements(_np.linalg.eigvals)
+def _np_linalg_eigvals(a):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    evals, _ = eig(a)
+    return evals
+
+
+@implements(_np.linalg.eigvals)
+def _np_linalg_eigvals(a):
+    if not isinstance(a, IntervalArray):
+        return NotImplemented
+    evals, _ = eig(a)
+    return evals
+
+
 @implements(_np.linalg.pinv)
 def _np_linalg_pinv(a, rcond=1e-15, hermitian=False):
     if not isinstance(a, IntervalArray):
@@ -701,6 +718,20 @@ def _np_mean(a, axis=None, dtype=None, out=None, keepdims=False, where=True):
     if out is not None or dtype is not None:
         return NotImplemented
     return mean(a, axis=axis)
+
+
+@implements(_np.std)
+def _np_std(a, axis=None, dtype=None, out=None, keepdims=False, where=True):
+    if out is not None or dtype is not None:
+        return NotImplemented
+    return std(a, axis=axis)
+
+
+@implements(_np.var)
+def _np_var(a, axis=None, dtype=None, out=None, keepdims=False, where=True):
+    if out is not None or dtype is not None:
+        return NotImplemented
+    return var(a, axis=axis)
 
 
 @implements(_np.max)
