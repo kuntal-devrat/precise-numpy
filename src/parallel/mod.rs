@@ -1,12 +1,15 @@
-use rayon::prelude::*;
 use crate::array::IntervalArray;
 use crate::error::Interval;
 use crate::simd::vec_ops;
+use rayon::prelude::*;
 
 /// Parallel element-wise operation using Rayon work-stealing.
 ///
 /// Works directly on SoA slices instead of collecting into Vec<Interval>.
-pub fn par_apply_unary(a: &IntervalArray, f: impl Fn(Interval) -> Interval + Sync) -> IntervalArray {
+pub fn par_apply_unary(
+    a: &IntervalArray,
+    f: impl Fn(Interval) -> Interval + Sync,
+) -> IntervalArray {
     let n = a.len();
     let mids = a.data().midpoints();
     let rads = a.data().radii();
@@ -16,7 +19,8 @@ pub fn par_apply_unary(a: &IntervalArray, f: impl Fn(Interval) -> Interval + Syn
 
     const CHUNK: usize = 4096;
 
-    out_mids.par_chunks_mut(CHUNK)
+    out_mids
+        .par_chunks_mut(CHUNK)
         .zip(out_rads.par_chunks_mut(CHUNK))
         .enumerate()
         .for_each(|(chunk_idx, (om, or))| {
@@ -52,7 +56,8 @@ pub fn par_apply_binary(
 
     const CHUNK: usize = 4096;
 
-    out_mids.par_chunks_mut(CHUNK)
+    out_mids
+        .par_chunks_mut(CHUNK)
         .zip(out_rads.par_chunks_mut(CHUNK))
         .enumerate()
         .for_each(|(chunk_idx, (om, or))| {
@@ -75,17 +80,15 @@ pub fn par_sum(a: &IntervalArray) -> Interval {
     let mids = a.data().midpoints();
     let rads = a.data().radii();
 
-    let (mid_sum, rad_sum) = mids.par_chunks(4096)
+    let (mid_sum, rad_sum) = mids
+        .par_chunks(4096)
         .zip(rads.par_chunks(4096))
         .map(|(mc, rc)| {
             let m = vec_ops::sum_f64(mc);
             let r = vec_ops::sum_f64(rc);
             (m, r)
         })
-        .reduce(
-            || (0.0f64, 0.0f64),
-            |(m1, r1), (m2, r2)| (m1 + m2, r1 + r2),
-        );
+        .reduce(|| (0.0f64, 0.0f64), |(m1, r1), (m2, r2)| (m1 + m2, r1 + r2));
 
     Interval::from_midpoint_radius(mid_sum, rad_sum)
 }

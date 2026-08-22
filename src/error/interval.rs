@@ -35,7 +35,10 @@ impl Interval {
     pub fn from_midpoint_radius(mid: f64, radius: f64) -> Self {
         debug_assert!(radius >= 0.0 || radius.is_nan());
         if mid.is_nan() || radius.is_nan() {
-            return Self { lo: f64::NAN, hi: f64::NAN };
+            return Self {
+                lo: f64::NAN,
+                hi: f64::NAN,
+            };
         }
         if radius == f64::INFINITY {
             return Interval::entire();
@@ -168,7 +171,10 @@ impl Interval {
         // 1/[a,b] = [1/b, 1/a] with directed rounding
         let new_lo = div_rd(1.0, self.hi);
         let new_hi = div_ru(1.0, self.lo);
-        Interval { lo: new_lo, hi: new_hi }
+        Interval {
+            lo: new_lo,
+            hi: new_hi,
+        }
     }
 }
 
@@ -581,9 +587,10 @@ mod tests {
 
     #[test]
     fn test_exact() {
-        let i = Interval::exact(3.14);
-        assert_eq!(i.lo, 3.14);
-        assert_eq!(i.hi, 3.14);
+        let pi = std::f64::consts::PI;
+        let i = Interval::exact(pi);
+        assert_eq!(i.lo, pi);
+        assert_eq!(i.hi, pi);
         assert!(i.is_exact());
     }
 

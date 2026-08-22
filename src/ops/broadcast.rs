@@ -44,7 +44,10 @@ pub fn broadcast_shapes_many(shapes: &[&[usize]]) -> Option<Vec<usize>> {
 
 /// Broadcast an array to a target shape by materializing repeated values.
 pub fn broadcast_to(a: &IntervalArray, shape: &[usize]) -> IntervalArray {
-    debug_assert_eq!(a.len() == 1 || broadcast_shapes(a.shape(), shape).is_some(), true);
+    debug_assert_eq!(
+        a.len() == 1 || broadcast_shapes(a.shape(), shape).is_some(),
+        true
+    );
     let target_total: usize = shape.iter().product();
     let a_total = a.len();
     let n_src = a.shape().len();
@@ -97,8 +100,8 @@ pub fn broadcast_to(a: &IntervalArray, shape: &[usize]) -> IntervalArray {
 
 /// Broadcast two arrays to their common shape. Panics on incompatible shapes.
 pub fn broadcast_pair(a: &IntervalArray, b: &IntervalArray) -> (IntervalArray, IntervalArray) {
-    let shape = broadcast_shapes(a.shape(), b.shape())
-        .expect("operands could not be broadcast together");
+    let shape =
+        broadcast_shapes(a.shape(), b.shape()).expect("operands could not be broadcast together");
     (broadcast_to(a, &shape), broadcast_to(b, &shape))
 }
 

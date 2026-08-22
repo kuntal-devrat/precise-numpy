@@ -74,7 +74,15 @@ fn scalar_div_array(a: &IntervalArray, s: f64) -> (IntervalArray, bool) {
         let rads = vec![f64::INFINITY; n];
         return (IntervalArray::from_raw_parts(&mids, &rads, a.shape()), true);
     }
-    (arithmetic::scale_array(a, 1.0 / s), false)
+    // fl(1/s) carries up to half an ulp of rounding error that plain
+    // scale_array would silently drop from the radius. Widen the divisor
+    // by one ulp on each side so the enclosure stays rigorous.
+    let r = 1.0 / s;
+    let divisor = Interval::new(
+        crate::error::interval::next_down(r),
+        crate::error::interval::next_up(r),
+    );
+    (arithmetic::mul_scalar(a, divisor), false)
 }
 
 /// Broadcast two arrays to a common shape, raising on incompatible shapes.
@@ -93,6 +101,26 @@ fn broadcast_for_op(
         broadcast::broadcast_to(a, &shape),
         broadcast::broadcast_to(b, &shape),
     ))
+}
+
+/// Element-wise hull for `maximum` (union of the two intervals).
+/// Propagates NaN/empty operands instead of `f64::max` silently discarding them.
+fn max_hull(x: Interval, y: Interval) -> Interval {
+    if x.lo.is_nan() || x.hi.is_nan() || y.lo.is_nan() || y.hi.is_nan() {
+        Interval::nan()
+    } else {
+        Interval::new(x.lo.max(y.lo), x.hi.max(y.hi))
+    }
+}
+
+/// Element-wise hull for `minimum` (intersection of the two intervals).
+/// Propagates NaN/empty operands instead of `f64::min` silently discarding them.
+fn min_hull(x: Interval, y: Interval) -> Interval {
+    if x.lo.is_nan() || x.hi.is_nan() || y.lo.is_nan() || y.hi.is_nan() {
+        Interval::nan()
+    } else {
+        Interval::new(x.lo.min(y.lo), x.hi.min(y.hi))
+    }
 }
 
 fn add_dispatch(a: &IntervalArray, b: &IntervalArray) -> PyResult<IntervalArray> {
@@ -122,11 +150,7 @@ fn pow_dispatch(a: &IntervalArray, b: &IntervalArray) -> PyResult<IntervalArray>
     Ok(extra::pow_arrays(&ba, &bb))
 }
 
-fn compare_dispatch(
-    a: &IntervalArray,
-    b: &IntervalArray,
-    op: compare::Cmp,
-) -> PyResult<Vec<bool>> {
+fn compare_dispatch(a: &IntervalArray, b: &IntervalArray, op: compare::Cmp) -> PyResult<Vec<bool>> {
     let (ba, bb) = broadcast_for_op(a, b)?;
     Ok(compare::compare_arrays(&ba, &bb, op))
 }
@@ -262,13 +286,15 @@ impl ParsedIndex {
     /// The Axis components in order (their position within the Vec is the
     /// ordinal of the original axis they index).
     fn axis_comps(&self) -> impl Iterator<Item = &IndexComp> {
-        self.comps.iter().filter(|c| matches!(c, IndexComp::Axis { .. }))
+        self.comps
+            .iter()
+            .filter(|c| matches!(c, IndexComp::Axis { .. }))
     }
 
     fn scalar(&self) -> bool {
-        self.comps.iter().all(|c| {
-            matches!(c, IndexComp::Axis { is_int: true, .. })
-        })
+        self.comps
+            .iter()
+            .all(|c| matches!(c, IndexComp::Axis { is_int: true, .. }))
     }
 }
 
@@ -517,9 +543,12 @@ fn apply_index_set(
     parsed: &ParsedIndex,
     value: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    let ndim = slf.ndim();
     let strides = slf.strides().to_vec();
     let axis_comps: Vec<&IndexComp> = parsed.axis_comps().collect();
+    // NewAxis entries do not consume an original axis, so cursor/sizes are
+    // keyed by the axis ordinal (count of Axis comps), not slf.ndim(). Using
+    // ndim here would index past the end of `sizes` and panic on `None`.
+    let n_axes = axis_comps.len();
 
     let sizes: Vec<usize> = axis_comps
         .iter()
@@ -530,7 +559,7 @@ fn apply_index_set(
         .collect();
     let total: usize = sizes.iter().product();
     let mut positions: Vec<usize> = Vec::with_capacity(total);
-    let mut cursor = vec![0usize; ndim];
+    let mut cursor = vec![0usize; n_axes];
     for _ in 0..total {
         let mut flat = 0usize;
         for (k, comp) in axis_comps.iter().enumerate() {
@@ -539,7 +568,7 @@ fn apply_index_set(
             }
         }
         positions.push(flat);
-        for k in (0..ndim).rev() {
+        for k in (0..n_axes).rev() {
             if cursor[k] + 1 < sizes[k] {
                 cursor[k] += 1;
                 break;
@@ -835,11 +864,7 @@ impl PyIntervalArray {
 
     // ── Indexing ──
 
-    fn __getitem__<'py>(
-        &self,
-        py: Python<'py>,
-        index: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn __getitem__<'py>(&self, py: Python<'py>, index: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         let parsed = parse_index(&self.inner, index)?;
         apply_index_get(py, &self.inner, &parsed)
     }
@@ -847,7 +872,7 @@ impl PyIntervalArray {
     fn __setitem__(&mut self, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let parsed = parse_index(&self.inner, index)?;
         apply_index_set(&mut self.inner, &parsed, value)
-}
+    }
 
     fn __iter__<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
         let ndim = slf.inner.ndim();
@@ -1106,10 +1131,7 @@ impl PyIntervalArray {
         }
     }
 
-    fn __matmul__<'py>(
-        slf: &Bound<'py, Self>,
-        other: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn __matmul__<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         if let Ok(other_arr) = other.downcast::<PyIntervalArray>() {
             let a = slf.borrow().inner.clone();
@@ -1129,10 +1151,7 @@ impl PyIntervalArray {
         }
     }
 
-    fn __rmatmul__<'py>(
-        slf: &Bound<'py, Self>,
-        other: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn __rmatmul__<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__matmul__(slf, other)
     }
 
@@ -1415,10 +1434,7 @@ impl PyIntervalArray {
         )
     }
 
-    fn __reduce__(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(PyObject, (Vec<f64>, Vec<f64>, Vec<usize>))> {
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(PyObject, (Vec<f64>, Vec<f64>, Vec<usize>))> {
         let module = pyo3::types::PyModule::import_bound(py, "precise_numpy._precise_numpy")?;
         let ctor = module.getattr("from_raw_parts")?;
         let state = (
@@ -1429,10 +1445,7 @@ impl PyIntervalArray {
         Ok((ctor.into_any().unbind(), state))
     }
 
-    fn __setstate__(
-        &mut self,
-        state: (Vec<usize>, Vec<f64>, Vec<f64>),
-    ) -> PyResult<()> {
+    fn __setstate__(&mut self, state: (Vec<usize>, Vec<f64>, Vec<f64>)) -> PyResult<()> {
         let (shape, mids, rads) = state;
         if mids.len() != rads.len() {
             return Err(PyValueError::new_err(
@@ -1515,7 +1528,7 @@ impl PyIntervalArray {
         for i in 0..n {
             let x = ba.get(i);
             let y = bb.get(i);
-            let r = Interval::new(x.lo.max(y.lo), x.hi.max(y.hi));
+            let r = max_hull(x, y);
             out_mids[i] = r.midpoint();
             out_rads[i] = r.radius();
         }
@@ -1541,7 +1554,7 @@ impl PyIntervalArray {
         for i in 0..n {
             let x = ba.get(i);
             let y = bb.get(i);
-            let r = Interval::new(x.lo.min(y.lo), x.hi.min(y.hi));
+            let r = min_hull(x, y);
             out_mids[i] = r.midpoint();
             out_rads[i] = r.radius();
         }
@@ -1615,9 +1628,7 @@ impl PyIntervalArray {
     #[pyo3(signature = (axis=None))]
     fn max<'py>(&self, py: Python<'py>, axis: Option<usize>) -> PyResult<Py<PyAny>> {
         if self.inner.is_empty() {
-            return Err(PyValueError::new_err(
-                "max of an empty array has no value",
-            ));
+            return Err(PyValueError::new_err("max of an empty array has no value"));
         }
         match axis {
             None => {
@@ -1634,9 +1645,7 @@ impl PyIntervalArray {
     #[pyo3(signature = (axis=None))]
     fn min<'py>(&self, py: Python<'py>, axis: Option<usize>) -> PyResult<Py<PyAny>> {
         if self.inner.is_empty() {
-            return Err(PyValueError::new_err(
-                "min of an empty array has no value",
-            ));
+            return Err(PyValueError::new_err("min of an empty array has no value"));
         }
         match axis {
             None => {
@@ -1665,10 +1674,14 @@ impl PyIntervalArray {
     #[pyo3(signature = (axis=None))]
     fn argmax<'py>(&self, py: Python<'py>, axis: Option<usize>) -> PyResult<Py<PyAny>> {
         if self.inner.is_empty() {
-            return Err(PyValueError::new_err("attempt to get argmax of an empty array"));
+            return Err(PyValueError::new_err(
+                "attempt to get argmax of an empty array",
+            ));
         }
         match axis {
-            None => Ok(extra::arg_extreme_flat(&self.inner, true).to_object(py).into_any()),
+            None => Ok(extra::arg_extreme_flat(&self.inner, true)
+                .to_object(py)
+                .into_any()),
             Some(ax) => {
                 check_axis(self.inner.ndim(), ax)?;
                 let v = extra::arg_extreme_axis(&self.inner, ax, true);
@@ -1680,10 +1693,14 @@ impl PyIntervalArray {
     #[pyo3(signature = (axis=None))]
     fn argmin<'py>(&self, py: Python<'py>, axis: Option<usize>) -> PyResult<Py<PyAny>> {
         if self.inner.is_empty() {
-            return Err(PyValueError::new_err("attempt to get argmin of an empty array"));
+            return Err(PyValueError::new_err(
+                "attempt to get argmin of an empty array",
+            ));
         }
         match axis {
-            None => Ok(extra::arg_extreme_flat(&self.inner, false).to_object(py).into_any()),
+            None => Ok(extra::arg_extreme_flat(&self.inner, false)
+                .to_object(py)
+                .into_any()),
             Some(ax) => {
                 check_axis(self.inner.ndim(), ax)?;
                 let v = extra::arg_extreme_axis(&self.inner, ax, false);
@@ -1907,9 +1924,7 @@ impl PyIntervalArray {
                 inferred = Some(resolved.len());
                 resolved.push(1);
             } else if d < 0 {
-                return Err(PyValueError::new_err(
-                    "negative dimensions are not allowed",
-                ));
+                return Err(PyValueError::new_err("negative dimensions are not allowed"));
             } else {
                 resolved.push(d as usize);
                 known_product *= d as i128;
@@ -2034,7 +2049,10 @@ fn rdiv_scalar(a: &IntervalArray, s: f64) -> (IntervalArray, bool) {
         };
         out_rads[i] = crate::error::interval::div_ru(nums, den);
     }
-    (IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape()), warn)
+    (
+        IntervalArray::from_raw_parts(&out_mids, &out_rads, a.shape()),
+        warn,
+    )
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2208,12 +2226,10 @@ fn arange(start: f64, stop: f64, step: f64) -> PyResult<PyIntervalArray> {
     })
 }
 
-fn extract_arrays<'py>(
-    arrays: &Bound<'py, PyAny>,
-) -> PyResult<Vec<Py<PyIntervalArray>>> {
-    arrays.extract::<Vec<Py<PyIntervalArray>>>().map_err(|_| {
-        PyTypeError::new_err("expected a list of IntervalArray objects")
-    })
+fn extract_arrays<'py>(arrays: &Bound<'py, PyAny>) -> PyResult<Vec<Py<PyIntervalArray>>> {
+    arrays
+        .extract::<Vec<Py<PyIntervalArray>>>()
+        .map_err(|_| PyTypeError::new_err("expected a list of IntervalArray objects"))
 }
 
 #[pyfunction(signature = (arrays, axis=0))]
@@ -2223,10 +2239,7 @@ fn concatenate(
     axis: usize,
 ) -> PyResult<PyIntervalArray> {
     let arrs = extract_arrays(arrays)?;
-    let refs: Vec<IntervalArray> = arrs
-        .iter()
-        .map(|a| a.borrow(py).inner.clone())
-        .collect();
+    let refs: Vec<IntervalArray> = arrs.iter().map(|a| a.borrow(py).inner.clone()).collect();
     let refs2: Vec<&IntervalArray> = refs.iter().collect();
     let result = extra::concatenate(&refs2, axis).map_err(|e| PyValueError::new_err(e))?;
     Ok(PyIntervalArray { inner: result })
@@ -2235,10 +2248,7 @@ fn concatenate(
 #[pyfunction(signature = (arrays, axis=0))]
 fn stack(py: Python<'_>, arrays: &Bound<'_, PyAny>, axis: usize) -> PyResult<PyIntervalArray> {
     let arrs = extract_arrays(arrays)?;
-    let refs: Vec<IntervalArray> = arrs
-        .iter()
-        .map(|a| a.borrow(py).inner.clone())
-        .collect();
+    let refs: Vec<IntervalArray> = arrs.iter().map(|a| a.borrow(py).inner.clone()).collect();
     let refs2: Vec<&IntervalArray> = refs.iter().collect();
     let result = extra::stack(&refs2, axis).map_err(|e| PyValueError::new_err(e))?;
     Ok(PyIntervalArray { inner: result })
@@ -2252,10 +2262,7 @@ fn vstack(py: Python<'_>, arrays: &Bound<'_, PyAny>) -> PyResult<PyIntervalArray
 #[pyfunction]
 fn hstack(py: Python<'_>, arrays: &Bound<'_, PyAny>) -> PyResult<PyIntervalArray> {
     let arrs = extract_arrays(arrays)?;
-    let refs: Vec<IntervalArray> = arrs
-        .iter()
-        .map(|a| a.borrow(py).inner.clone())
-        .collect();
+    let refs: Vec<IntervalArray> = arrs.iter().map(|a| a.borrow(py).inner.clone()).collect();
     if refs.is_empty() {
         return Err(PyValueError::new_err("need at least one array to hstack"));
     }
@@ -2298,8 +2305,7 @@ fn split(
             "indices_or_sections must be an int or a list of ints",
         ));
     };
-    let parts =
-        extra::split(&inner, &indices, axis).map_err(|e| PyValueError::new_err(e))?;
+    let parts = extra::split(&inner, &indices, axis).map_err(|e| PyValueError::new_err(e))?;
     let mut out = Vec::with_capacity(parts.len());
     for p in parts {
         out.push(PyIntervalArray { inner: p });
@@ -2341,19 +2347,26 @@ fn where_impl(
     } else if let Ok(s) = x.extract::<f64>() {
         IntervalArray::from_f64_slice(&[s])
     } else {
-        return Err(PyTypeError::new_err("x must be an IntervalArray or a number"));
+        return Err(PyTypeError::new_err(
+            "x must be an IntervalArray or a number",
+        ));
     };
     let ya: IntervalArray = if let Ok(a) = y.downcast::<PyIntervalArray>() {
         a.borrow().inner.clone()
     } else if let Ok(s) = y.extract::<f64>() {
         IntervalArray::from_f64_slice(&[s])
     } else {
-        return Err(PyTypeError::new_err("y must be an IntervalArray or a number"));
+        return Err(PyTypeError::new_err(
+            "y must be an IntervalArray or a number",
+        ));
     };
 
     // Broadcast condition, x, y together.
     let cond_arr = IntervalArray::from_raw_parts(
-        &cond_vec.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect::<Vec<f64>>(),
+        &cond_vec
+            .iter()
+            .map(|&b| if b { 1.0 } else { 0.0 })
+            .collect::<Vec<f64>>(),
         &vec![0.0; cond_vec.len()],
         &[cond_vec.len()],
     );
@@ -2570,7 +2583,10 @@ fn eig<'py>(py: Python<'py>, a: &Bound<'py, PyIntervalArray>) -> PyResult<Py<PyA
             PyValueError::new_err(e)
         }
     })?;
-    Ok((Py::new(py, PyIntervalArray { inner: evals })?, Py::new(py, PyIntervalArray { inner: evecs })?)
+    Ok((
+        Py::new(py, PyIntervalArray { inner: evals })?,
+        Py::new(py, PyIntervalArray { inner: evecs })?,
+    )
         .to_object(py)
         .into_any())
 }
@@ -2656,6 +2672,6 @@ fn _precise_numpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(matrix_power, m)?)?;
     m.add_function(wrap_pyfunction!(matrix_rank, m)?)?;
     m.add_function(wrap_pyfunction!(cond, m)?)?;
-    m.add("__version__", "0.2.5")?;
+    m.add("__version__", "1.0.0")?;
     Ok(())
 }

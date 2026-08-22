@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::array::IntervalArray;
 use crate::error::Interval;
 use crate::simd::vec_ops;
+use rayon::prelude::*;
 
 /// SIMD & parallel-accelerated interval addition with rigorous error
 /// propagation: the radius includes the rounding error of the midpoint sum.
@@ -18,7 +18,8 @@ pub fn add_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
 
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
-        r_mids.par_chunks_mut(CHUNK)
+        r_mids
+            .par_chunks_mut(CHUNK)
             .zip(r_rads.par_chunks_mut(CHUNK))
             .enumerate()
             .for_each(|(chunk_idx, (rm, rr))| {
@@ -55,7 +56,8 @@ pub fn sub_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
 
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
-        r_mids.par_chunks_mut(CHUNK)
+        r_mids
+            .par_chunks_mut(CHUNK)
             .zip(r_rads.par_chunks_mut(CHUNK))
             .enumerate()
             .for_each(|(chunk_idx, (rm, rr))| {
@@ -93,7 +95,8 @@ pub fn mul_arrays(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
 
     if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
-        r_mids.par_chunks_mut(CHUNK)
+        r_mids
+            .par_chunks_mut(CHUNK)
             .zip(r_rads.par_chunks_mut(CHUNK))
             .enumerate()
             .for_each(|(chunk_idx, (rm, rr))| {
@@ -149,7 +152,8 @@ pub fn div_arrays(a: &IntervalArray, b: &IntervalArray) -> (IntervalArray, bool)
         }
     } else if n >= vec_ops::PAR_THRESHOLD {
         const CHUNK: usize = 8192;
-        r_mids.par_chunks_mut(CHUNK)
+        r_mids
+            .par_chunks_mut(CHUNK)
             .zip(r_rads.par_chunks_mut(CHUNK))
             .enumerate()
             .for_each(|(chunk_idx, (rm, rr))| {

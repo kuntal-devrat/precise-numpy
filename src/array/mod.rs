@@ -1,7 +1,7 @@
 pub mod storage;
 
-use std::sync::Arc;
 use crate::error::Interval;
+use std::sync::Arc;
 use storage::AlignedBuffer;
 
 /// An N-dimensional array of intervals with shape, strides, and error tracking.
@@ -224,11 +224,7 @@ impl IntervalArray {
     /// The maximum radius across all elements.
     #[inline]
     pub fn max_radius(&self) -> f64 {
-        self.data
-            .radii()
-            .iter()
-            .copied()
-            .fold(0.0f64, f64::max)
+        self.data.radii().iter().copied().fold(0.0f64, f64::max)
     }
 
     /// Get interval at flat index.

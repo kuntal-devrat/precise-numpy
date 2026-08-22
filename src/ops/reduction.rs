@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::array::IntervalArray;
+use crate::error::interval::{add_ru_chain, mul_ru, next_down, next_up};
 use crate::error::Interval;
-use crate::error::interval::{next_down, next_up, add_ru_chain, mul_ru};
+use rayon::prelude::*;
 
 /// Exact TwoSum rounding error of fl(a + b), computed in round-to-nearest.
 /// Returns e such that a + b = fl(a + b) + e exactly.
@@ -79,8 +79,16 @@ pub fn std_dev(a: &IntervalArray) -> Interval {
     if v.lo.is_nan() {
         return v;
     }
-    let lo = if v.lo > 0.0 { next_down(v.lo.sqrt()) } else { 0.0 };
-    let hi = if v.hi > 0.0 { next_up(v.hi.sqrt()) } else { 0.0 };
+    let lo = if v.lo > 0.0 {
+        next_down(v.lo.sqrt())
+    } else {
+        0.0
+    };
+    let hi = if v.hi > 0.0 {
+        next_up(v.hi.sqrt())
+    } else {
+        0.0
+    };
     Interval::new(lo, hi)
 }
 
@@ -221,24 +229,40 @@ fn parallel_dgemm(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], out: &mut 
                 let a_ptr = unsafe { a.as_ptr().add(row_start * k) };
                 unsafe {
                     matrixmultiply::dgemm(
-                        current_m, k, n,
+                        current_m,
+                        k,
+                        n,
                         1.0,
-                        a_ptr, k as isize, 1,
-                        b.as_ptr(), n as isize, 1,
+                        a_ptr,
+                        k as isize,
+                        1,
+                        b.as_ptr(),
+                        n as isize,
+                        1,
                         0.0,
-                        m_chunk.as_mut_ptr(), n as isize, 1,
+                        m_chunk.as_mut_ptr(),
+                        n as isize,
+                        1,
                     );
                 }
             });
     } else {
         unsafe {
             matrixmultiply::dgemm(
-                m, k, n,
+                m,
+                k,
+                n,
                 1.0,
-                a.as_ptr(), k as isize, 1,
-                b.as_ptr(), n as isize, 1,
+                a.as_ptr(),
+                k as isize,
+                1,
+                b.as_ptr(),
+                n as isize,
+                1,
                 0.0,
-                out.as_mut_ptr(), n as isize, 1,
+                out.as_mut_ptr(),
+                n as isize,
+                1,
             );
         }
     }
@@ -342,8 +366,16 @@ pub fn norm_l2(a: &IntervalArray) -> Interval {
         sum_sq = sum_sq + sq;
     }
 
-    let lo = if sum_sq.lo > 0.0 { next_down(sum_sq.lo.sqrt()) } else { 0.0 };
-    let hi = if sum_sq.hi > 0.0 { next_up(sum_sq.hi.sqrt()) } else { 0.0 };
+    let lo = if sum_sq.lo > 0.0 {
+        next_down(sum_sq.lo.sqrt())
+    } else {
+        0.0
+    };
+    let hi = if sum_sq.hi > 0.0 {
+        next_up(sum_sq.hi.sqrt())
+    } else {
+        0.0
+    };
     Interval::new(lo, hi)
 }
 
@@ -373,7 +405,9 @@ pub fn dot_general(a: &IntervalArray, b: &IntervalArray) -> Result<MatmulResult,
             if k != b.len() {
                 return Err(format!(
                     "dot: shapes ({}, {}) and ({},) not aligned",
-                    m, k, b.len()
+                    m,
+                    k,
+                    b.len()
                 ));
             }
             let b2 = b.reshape(&[k, 1]);
@@ -433,7 +467,9 @@ pub fn matmul_general(a: &IntervalArray, b: &IntervalArray) -> Result<MatmulResu
             if k != b.len() {
                 return Err(format!(
                     "matmul: shapes ({}, {}) and ({},) not aligned",
-                    m, k, b.len()
+                    m,
+                    k,
+                    b.len()
                 ));
             }
             let b2 = b.reshape(&[k, 1]);

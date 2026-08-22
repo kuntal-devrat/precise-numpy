@@ -38,5 +38,8 @@ pub fn max_relative_error(intervals: &[Interval]) -> f64 {
 /// Compute the sum of all intervals, accumulating error.
 #[inline]
 pub fn accumulate_sum(intervals: &[Interval]) -> Interval {
-    intervals.iter().copied().fold(Interval::zero(), |acc, i| acc + i)
+    intervals
+        .iter()
+        .copied()
+        .fold(Interval::zero(), |acc, i| acc + i)
 }

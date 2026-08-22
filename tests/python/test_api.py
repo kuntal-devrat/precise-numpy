@@ -1,6 +1,5 @@
 """End-to-end tests for the precise_numpy Python package (0.2.0 API)."""
 
-import io
 import math
 import os
 import tempfile
@@ -284,9 +283,7 @@ class TestMathFunctions(unittest.TestCase):
         self.assertEqual(a.round().values(), [1.0, 2.0, 4.0])
         self.assertEqual(round(a).values(), [1.0, 2.0, 4.0])
         self.assertEqual(round(a, 1).values(), [1.1, 2.5, 3.7])
-        self.assertEqual(
-            pnp.array([1.2345, 2.6789]).round(2).values(), [1.23, 2.68]
-        )
+        self.assertEqual(pnp.array([1.2345, 2.6789]).round(2).values(), [1.23, 2.68])
         self.assertEqual(pnp.round_(pnp.array([1.2345])).values(), [1.0])
 
     def test_clip_sign_nan(self):
@@ -384,7 +381,10 @@ class TestReductions(unittest.TestCase):
         self.assertAlmostEqual(la.norm(a, ord=float("inf"))[0], 7.0)
         self.assertAlmostEqual(la.norm(a, ord=float("-inf"))[0], 3.0)
         self.assertAlmostEqual(la.norm(a, ord=2)[0], math.sqrt(15.0 + math.sqrt(221.0)))
-        self.assertAlmostEqual(la.norm(a, ord="nuc")[0], math.sqrt(15.0 + math.sqrt(221.0)) + math.sqrt(15.0 - math.sqrt(221.0)))
+        self.assertAlmostEqual(
+            la.norm(a, ord="nuc")[0],
+            math.sqrt(15.0 + math.sqrt(221.0)) + math.sqrt(15.0 - math.sqrt(221.0)),
+        )
         v = pnp.array([3.0, -4.0])
         self.assertAlmostEqual(la.norm(v)[0], 5.0)
         self.assertAlmostEqual(la.norm(v, ord=1)[0], 7.0)
@@ -674,7 +674,6 @@ class TestFileIO(unittest.TestCase):
 class TestNumpyInterop(unittest.TestCase):
     def test_array_protocol(self):
         import numpy as _np
-
         import precise_numpy as _pnp
 
         a = _pnp.array([[1.5, 2.5], [3.5, 4.5]], error=0.1)
@@ -688,7 +687,6 @@ class TestNumpyInterop(unittest.TestCase):
 
     def test_array_protocol_dtype(self):
         import numpy as _np
-
         import precise_numpy as _pnp
 
         a = _pnp.array([1.25])
@@ -698,7 +696,6 @@ class TestNumpyInterop(unittest.TestCase):
 
     def test_to_numpy(self):
         import numpy as _np
-
         import precise_numpy as _pnp
 
         a = _pnp.zeros([3])
@@ -710,7 +707,6 @@ class TestNumpyInterop(unittest.TestCase):
 
     def test_from_numpy_scalar_error(self):
         import numpy as _np
-
         import precise_numpy as _pnp
 
         x = _np.array([1.0, 2.0, 3.0])
@@ -721,7 +717,6 @@ class TestNumpyInterop(unittest.TestCase):
 
     def test_from_numpy_array_error(self):
         import numpy as _np
-
         import precise_numpy as _pnp
 
         x = _np.array([[1.0, 4.0], [9.0, 16.0]])
@@ -739,15 +734,15 @@ class TestNumpyInterop(unittest.TestCase):
 class TestExtraLinalg(unittest.TestCase):
     def test_cholesky_spd(self):
         a = pnp.array([[4.0, 2.0], [2.0, 3.0]])
-        l = pnp.cholesky(a)
-        self.assertEqual(l.shape, (2, 2))
-        ll = pnp.matmul(l, l.transpose())
+        chol = pnp.cholesky(a)
+        self.assertEqual(chol.shape, (2, 2))
+        ll = pnp.matmul(chol, chol.transpose())
         for k in range(4):
             mid_ll = ll.values()[k]
             mid_a = a.values()[k]
             self.assertTrue(abs(mid_ll - mid_a) < 1e-10)
-        self.assertAlmostEqual(l.values()[0], 2.0)
-        self.assertAlmostEqual(l.values()[2], 1.0)
+        self.assertAlmostEqual(chol.values()[0], 2.0)
+        self.assertAlmostEqual(chol.values()[2], 1.0)
 
     def test_cholesky_not_spd(self):
         a = pnp.array([[-1.0, 0.0], [0.0, 1.0]])
@@ -948,7 +943,7 @@ class TestAstype(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "0.2.5")
+        self.assertEqual(pnp.__version__, "1.0.0")
 
 
 if __name__ == "__main__":

@@ -2,10 +2,10 @@
 //! axis reductions, and selection helpers.
 
 use crate::array::IntervalArray;
-use crate::error::Interval;
 use crate::error::interval::{
-    next_down, next_up, next_down_n, next_up_n, add_ru_chain, half_ulp, LIBSM_ULP_ALLOWANCE,
+    add_ru_chain, half_ulp, next_down, next_down_n, next_up, next_up_n, LIBSM_ULP_ALLOWANCE,
 };
+use crate::error::Interval;
 
 // ── Element-wise interval math ─────────────────────────────────────────
 
@@ -55,7 +55,11 @@ pub fn pow_interval(base: Interval, exp: Interval) -> Interval {
     if base.hi <= 0.0 {
         return Interval::nan();
     }
-    let ln_lo = if base.lo > 0.0 { base.lo } else { f64::MIN_POSITIVE };
+    let ln_lo = if base.lo > 0.0 {
+        base.lo
+    } else {
+        f64::MIN_POSITIVE
+    };
     let ln_iv = Interval::new(
         next_down_n(ln_lo.ln(), LIBSM_ULP_ALLOWANCE),
         next_up_n(base.hi.ln(), LIBSM_ULP_ALLOWANCE),
@@ -64,7 +68,11 @@ pub fn pow_interval(base: Interval, exp: Interval) -> Interval {
 
     // Rigorous enclosure of exp(prod) with outward rounding (exp is not
     // correctly rounded on all platforms, hence the ulp allowance).
-    let hi_raw = if prod.hi > 709.0 { f64::INFINITY } else { prod.hi.exp() };
+    let hi_raw = if prod.hi > 709.0 {
+        f64::INFINITY
+    } else {
+        prod.hi.exp()
+    };
     let lo_raw = if prod.lo < -745.0 { 0.0 } else { prod.lo.exp() };
     let lo = next_down_n(lo_raw, LIBSM_ULP_ALLOWANCE).max(0.0);
     let hi = next_up_n(hi_raw, LIBSM_ULP_ALLOWANCE);
@@ -77,7 +85,11 @@ pub fn pow_interval(base: Interval, exp: Interval) -> Interval {
     // centered tightly while remaining rigorous.
     let bm = base.midpoint();
     let em = exp.midpoint();
-    let mut mid = if bm > 0.0 { bm.powf(em) } else { (lo + hi) * 0.5 };
+    let mut mid = if bm > 0.0 {
+        bm.powf(em)
+    } else {
+        (lo + hi) * 0.5
+    };
     if mid.is_nan() || mid < lo || mid > hi {
         mid = (lo + hi) * 0.5;
         if mid.is_nan() {
@@ -168,7 +180,11 @@ pub fn trunc_interval(iv: Interval, m: f64) -> (f64, f64) {
 }
 
 pub fn round_interval(iv: Interval, m: f64) -> (f64, f64) {
-    centered_round(m.round_ties_even(), iv.lo.round_ties_even(), iv.hi.round_ties_even())
+    centered_round(
+        m.round_ties_even(),
+        iv.lo.round_ties_even(),
+        iv.hi.round_ties_even(),
+    )
 }
 
 /// Round an interval to a fixed number of decimals (numpy `round(ndigits)`).
@@ -211,8 +227,8 @@ fn centered_round(mid: f64, lo_e: f64, hi_e: f64) -> (f64, f64) {
     if mid > hi_e {
         mid = hi_e;
     }
-    let rad = crate::error::interval::sub_ru(mid, lo_e)
-        .max(crate::error::interval::sub_ru(hi_e, mid));
+    let rad =
+        crate::error::interval::sub_ru(mid, lo_e).max(crate::error::interval::sub_ru(hi_e, mid));
     (mid, rad)
 }
 
@@ -299,7 +315,8 @@ pub fn argsort(a: &IntervalArray) -> Vec<usize> {
     idx.sort_by(|&i, &j| {
         let (mi, ri) = (mids[i], rads[i]);
         let (mj, rj) = (mids[j], rads[j]);
-        mi.partial_cmp(&mj).unwrap_or(std::cmp::Ordering::Equal)
+        mi.partial_cmp(&mj)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| ri.partial_cmp(&rj).unwrap_or(std::cmp::Ordering::Equal))
     });
     idx
@@ -401,7 +418,9 @@ pub fn concatenate(arrays: &[&IntervalArray], axis: usize) -> Result<IntervalArr
         let _ = src_strides;
     }
 
-    Ok(IntervalArray::from_raw_parts(&out_mids, &out_rads, &out_shape))
+    Ok(IntervalArray::from_raw_parts(
+        &out_mids, &out_rads, &out_shape,
+    ))
 }
 
 /// Stack arrays along a new axis.
@@ -456,7 +475,11 @@ pub fn axis_range(a: &IntervalArray, axis: usize, start: usize, len: usize) -> I
 }
 
 /// Split an array into sections at the given indices along `axis`.
-pub fn split(a: &IntervalArray, indices: &[usize], axis: usize) -> Result<Vec<IntervalArray>, String> {
+pub fn split(
+    a: &IntervalArray,
+    indices: &[usize],
+    axis: usize,
+) -> Result<Vec<IntervalArray>, String> {
     if axis >= a.ndim() {
         return Err(format!("axis {} is out of bounds", axis));
     }
@@ -559,9 +582,12 @@ pub fn prod_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
 
 /// Min along an axis (hull of elementwise minima).
 pub fn min_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
-    reduce_axis(a, axis, Interval::new(f64::INFINITY, f64::INFINITY), |acc, x| {
-        Interval::new(acc.lo.min(x.lo), acc.hi.min(x.hi))
-    })
+    reduce_axis(
+        a,
+        axis,
+        Interval::new(f64::INFINITY, f64::INFINITY),
+        |acc, x| Interval::new(acc.lo.min(x.lo), acc.hi.min(x.hi)),
+    )
 }
 
 /// Max along an axis.
@@ -659,8 +685,16 @@ pub fn std_axis(a: &IntervalArray, axis: usize) -> IntervalArray {
     let mut out_rads = vec![0.0f64; n];
     for i in 0..n {
         let iv = v.get(i);
-        let lo = if iv.lo > 0.0 { next_down(iv.lo.sqrt()) } else { 0.0 };
-        let hi = if iv.hi > 0.0 { next_up(iv.hi.sqrt()) } else { 0.0 };
+        let lo = if iv.lo > 0.0 {
+            next_down(iv.lo.sqrt())
+        } else {
+            0.0
+        };
+        let hi = if iv.hi > 0.0 {
+            next_up(iv.hi.sqrt())
+        } else {
+            0.0
+        };
         let r = Interval::new(lo, hi);
         out_mids[i] = r.midpoint();
         out_rads[i] = r.radius();

@@ -1,7 +1,7 @@
 """Linear algebra helpers, mirroring numpy.linalg's core API."""
 
-from precise_numpy._precise_numpy import det, inv, solve, lstsq, eig, svd, pinv
-from precise_numpy import _as_array, abs_, power, sqrt, sum_, max, min
+from precise_numpy import _as_array, abs_, max, min, power, sqrt, sum_
+from precise_numpy._precise_numpy import det, eig, inv, lstsq, pinv, solve, svd
 
 
 def _reduce_norm(a, ord, axis):
@@ -21,7 +21,7 @@ def _reduce_norm(a, ord, axis):
         return min(abs_(a), axis=axis)
     if ord == 0:
         raise ValueError("ord=0 is not supported (count of nonzero elements)")
-    raise ValueError("unsupported ord %r for vector norm along an axis" % (ord,))
+    raise ValueError(f"unsupported ord {ord!r} for vector norm along an axis")
 
 
 def norm(a, ord=None, axis=None):
@@ -51,7 +51,7 @@ def norm(a, ord=None, axis=None):
                 return max(abs_(a))
             if ord == float("-inf"):
                 return min(abs_(a))
-            raise ValueError("unsupported ord %r for a vector norm" % (ord,))
+            raise ValueError(f"unsupported ord {ord!r} for a vector norm")
         if ord is None or ord == "fro":
             return a.norm()
         if ord == 1:
@@ -68,7 +68,7 @@ def norm(a, ord=None, axis=None):
         if ord == "nuc":
             ss = svd(a)[1].sum()
             return (ss[0], ss[1])
-        raise ValueError("unsupported ord %r for a matrix norm" % (ord,))
+        raise ValueError(f"unsupported ord {ord!r} for a matrix norm")
     if isinstance(axis, (list, tuple)):
         raise ValueError("multiple axes are not supported; pass a single int axis")
     if not isinstance(axis, int):

@@ -24,8 +24,8 @@
 //!   rather than fake-precise point values.
 
 use crate::array::IntervalArray;
-use crate::error::Interval;
 use crate::error::interval::{add_ru, div_ru, mul_ru, next_down, next_up};
+use crate::error::Interval;
 use crate::ops::reduction::{matmul, matmul_general, MatmulResult};
 
 fn row_major(_m: usize, n: usize, i: usize, j: usize) -> usize {
@@ -289,9 +289,7 @@ pub fn solve(a: &IntervalArray, b: &IntervalArray) -> Result<IntervalArray, Stri
             match lu_solve_interval(&mut mm, n, &rhs) {
                 Some(x) => IntervalArray::from_intervals(&x),
                 None => {
-                    return Err(
-                        "solve: singular matrix (interval contains zero pivot)".to_string()
-                    )
+                    return Err("solve: singular matrix (interval contains zero pivot)".to_string())
                 }
             }
         }
@@ -654,7 +652,9 @@ pub fn eig_symmetric(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray)
         for p in 0..n {
             for q in (p + 1)..n {
                 let apq = m[row_major(n, n, p, q)];
-                if apq.abs() <= eps * (m[row_major(n, n, p, p)].abs() + m[row_major(n, n, q, q)].abs()) {
+                if apq.abs()
+                    <= eps * (m[row_major(n, n, p, p)].abs() + m[row_major(n, n, q, q)].abs())
+                {
                     continue;
                 }
                 let app = m[row_major(n, n, p, p)];
@@ -693,7 +693,11 @@ pub fn eig_symmetric(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray)
 
     let vals: Vec<f64> = (0..n).map(|i| m[row_major(n, n, i, i)]).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| vals[b].partial_cmp(&vals[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        vals[b]
+            .partial_cmp(&vals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut vals_sorted = vec![0.0f64; n];
     let mut vecs = vec![0.0f64; n * n];
     for (k, &j) in order.iter().enumerate() {
@@ -1007,7 +1011,11 @@ pub fn eig_general(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray), 
         }
     }
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| vals[b].partial_cmp(&vals[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        vals[b]
+            .partial_cmp(&vals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut vals_sorted = vec![0.0f64; n];
     let mut vecs_sorted = vec![0.0f64; n * n];
     for (k, &j) in order.iter().enumerate() {
@@ -1239,20 +1247,20 @@ pub fn matrix_power(a: &IntervalArray, n: i64) -> Result<IntervalArray, String> 
 }
 
 /// Pragmatic matrix rank via the SVD upper bounds.
-    ///
-    /// Returns the number of singular values whose **upper bound** (midpoint +
-    /// radius) exceeds a tolerance.  The tolerance is `n·ε·(1 + σ_max⁰)` by
-    /// default.  Matrices in the interval family with smaller singular values
-    /// may rank-deficient; this function reports the rank of the **midpoint**
-    /// matrix.
-    ///
-    /// For a guaranteed minimum rank across the whole family, examine the
-    /// lower bounds of the singular value intervals manually.
-    pub fn matrix_rank(a: &IntervalArray) -> Result<usize, String> {
-        if a.ndim() != 2 {
-            return Err("matrix_rank requires a 2D array".into());
-        }
-let (_, s, _) = svd(a)?;
+///
+/// Returns the number of singular values whose **upper bound** (midpoint +
+/// radius) exceeds a tolerance.  The tolerance is `n·ε·(1 + σ_max⁰)` by
+/// default.  Matrices in the interval family with smaller singular values
+/// may rank-deficient; this function reports the rank of the **midpoint**
+/// matrix.
+///
+/// For a guaranteed minimum rank across the whole family, examine the
+/// lower bounds of the singular value intervals manually.
+pub fn matrix_rank(a: &IntervalArray) -> Result<usize, String> {
+    if a.ndim() != 2 {
+        return Err("matrix_rank requires a 2D array".into());
+    }
+    let (_, s, _) = svd(a)?;
     let mids = s.data().midpoints();
     let rads = s.data().radii();
     let n = mids.len();
@@ -1267,7 +1275,7 @@ let (_, s, _) = svd(a)?;
         .zip(rads.iter())
         .filter(|(&m, &r)| m + r > tol)
         .count())
-    }
+}
 
 /// 2-norm condition number of a square interval matrix.
 ///
@@ -1429,7 +1437,11 @@ mod tests {
         assert!(s0.contains(3.0), "sigma1 = {:?} must contain 3.0", s0);
         assert!(s1.contains(2.0), "sigma2 = {:?} must contain 2.0", s1);
         // Well-separated exact input: enclosure must be tight (roundoff-scale).
-        assert!(s0.radius() < 1e-12, "sigma1 radius {:e} too loose", s0.radius());
+        assert!(
+            s0.radius() < 1e-12,
+            "sigma1 radius {:e} too loose",
+            s0.radius()
+        );
     }
 
     #[test]
@@ -1443,10 +1455,26 @@ mod tests {
         let rads = [0.01, 0.01, 0.01, 0.01];
         let m = IntervalArray::from_raw_parts(&mids, &rads, &[2, 2]);
         let (_, s, _) = svd(&m).unwrap();
-        assert!(s.get(0).contains(2.99), "sigma1 = {:?} must contain 2.99", s.get(0));
-        assert!(s.get(0).contains(3.01), "sigma1 = {:?} must contain 3.01", s.get(0));
-        assert!(s.get(1).contains(1.99), "sigma2 = {:?} must contain 1.99", s.get(1));
-        assert!(s.get(1).contains(2.01), "sigma2 = {:?} must contain 2.01", s.get(1));
+        assert!(
+            s.get(0).contains(2.99),
+            "sigma1 = {:?} must contain 2.99",
+            s.get(0)
+        );
+        assert!(
+            s.get(0).contains(3.01),
+            "sigma1 = {:?} must contain 3.01",
+            s.get(0)
+        );
+        assert!(
+            s.get(1).contains(1.99),
+            "sigma2 = {:?} must contain 1.99",
+            s.get(1)
+        );
+        assert!(
+            s.get(1).contains(2.01),
+            "sigma2 = {:?} must contain 2.01",
+            s.get(1)
+        );
         assert!(s.get(0).radius() > 0.0);
     }
 
@@ -1473,7 +1501,11 @@ mod tests {
         assert!(evals.get(0).radius() < 1e-12);
         // Eigenvectors: well-separated, exact input → tight enclosure.
         for k in 0..4 {
-            assert!(evecs.get(k).radius() < 1e-8, "evec radius too loose: {}", evecs.get(k).radius());
+            assert!(
+                evecs.get(k).radius() < 1e-8,
+                "evec radius too loose: {}",
+                evecs.get(k).radius()
+            );
         }
     }
 
@@ -1499,14 +1531,22 @@ mod tests {
         // A v = lambda v within the enclosure
         for col in 0..2 {
             let lam = evals.get(col);
-            let v0 = evecs.get(0 * 2 + col);
+            let v0 = evecs.get(col);
             let v1 = evecs.get(1 * 2 + col);
             let av0 = m.get(0) * v0 + m.get(1) * v1;
             let av1 = m.get(2) * v0 + m.get(3) * v1;
             let lv0 = lam * v0;
             let lv1 = lam * v1;
-            assert!(av0.contains(lv0.midpoint()), "[col={}] av0 must contain lambda*v0", col);
-            assert!(av1.contains(lv1.midpoint()), "[col={}] av1 must contain lambda*v1", col);
+            assert!(
+                av0.contains(lv0.midpoint()),
+                "[col={}] av0 must contain lambda*v0",
+                col
+            );
+            assert!(
+                av1.contains(lv1.midpoint()),
+                "[col={}] av1 must contain lambda*v1",
+                col
+            );
         }
     }
 
@@ -1539,7 +1579,11 @@ mod tests {
 
     #[test]
     fn test_matrix_power_n0_n1_n2() {
-        let e = matrix_power(&IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]), 0).unwrap();
+        let e = matrix_power(
+            &IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]),
+            0,
+        )
+        .unwrap();
         assert!((e.get(0).midpoint() - 1.0).abs() < 1e-10);
         assert!((e.get(3).midpoint() - 1.0).abs() < 1e-10);
         assert!((e.get(1).midpoint() - 0.0).abs() < 1e-10);
@@ -1572,7 +1616,11 @@ mod tests {
     fn test_cond_variants() {
         let i = IntervalArray::from_f64_vec(&[1.0, 0.0, 0.0, 1.0], &[2, 2]);
         let c = cond(&i).unwrap();
-        assert!(c.midpoint() > 0.0 && c.midpoint() < 100.0, "cond(I) = {:?}", c);
+        assert!(
+            c.midpoint() > 0.0 && c.midpoint() < 100.0,
+            "cond(I) = {:?}",
+            c
+        );
         let s = IntervalArray::from_f64_vec(&[1.0, 2.0, 2.0, 4.0], &[2, 2]);
         let cs = cond(&s).unwrap();
         assert!(cs.midpoint() > 1e10, "cond(singular) = {:?}", cs);

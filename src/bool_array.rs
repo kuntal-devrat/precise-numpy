@@ -210,7 +210,11 @@ impl PyBoolArray {
             if o.borrow().len() != self.len() {
                 return Ok(false);
             }
-            return Ok(self.inner.iter().zip(o.borrow().inner.iter()).all(|(&a, &b)| a == b));
+            return Ok(self
+                .inner
+                .iter()
+                .zip(o.borrow().inner.iter())
+                .all(|(&a, &b)| a == b));
         }
         if let Ok(b) = other.extract::<bool>() {
             if self.len() != 1 {

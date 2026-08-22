@@ -10,7 +10,9 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/precise-numpy.svg?color=3776ab)](https://pypi.org/project/precise-numpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![Beta](https://img.shields.io/badge/Status-Beta-yellow.svg)](#status)
+[![Stable](https://img.shields.io/badge/Status-Stable-green.svg)](#status)
+[![CI](https://github.com/kuntal-devrat/precise-numpy/actions/workflows/ci.yml/badge.svg)](https://github.com/kuntal-devrat/precise-numpy/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/pypi/dm/precise-numpy.svg?color=008fc7)](https://pypi.org/project/precise-numpy/)
 
 [Quickstart](#quickstart) · [API](#api-reference) · [Benchmarks](#performance) · [Correctness](#correctness) · [Changelog](https://github.com/kuntal-devrat/precise-numpy/releases)
 
@@ -226,16 +228,22 @@ print("Max Relative Error:", Q.max_relative_error())
 | Performance | matmul 1000×1000: ~0.14s. Element-wise: ~1.1–2× vs numpy. 50 random triplets verified rigorous vs `float128`. |
 | API surface | Creation, arithmetic, reductions, broadcasting, indexing, linalg, random, I/O, NEP-13/18 interop |
 | Missing vs numpy | Complex intervals, `float32` intervals, writeable views, `np.fft`, `np.partition`, `np.take`, many ufuncs (`tanh`, `arccos`, `erf`) |
-| Classification | **Beta** — not Alpha. No known correctness holes. Feature gaps remain. |
+| Classification | **Stable (1.0.0)** — API frozen; rigorous enclosures guaranteed. Feature gaps remain vs numpy. |
 
 ---
 
 ## Testing
 
 ```bash
-cargo test                    # Rust unit tests
+make check          # fmt + clippy + ruff + all tests
+make test           # Rust + Python tests
+cargo test          # Rust unit tests
 python -m unittest tests/python/test_api.py   # Python integration tests
 ```
+
+CI runs the full lint + test matrix on Linux, macOS and Windows for Python
+3.10–3.13 on every push and pull request. Tagged `v*` releases build wheels
+for all platforms and publish to PyPI.
 
 ---
 

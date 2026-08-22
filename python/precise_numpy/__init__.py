@@ -13,46 +13,7 @@ Example:
     (2.1, 4.440892098500626e-16)
 """
 
-from precise_numpy._precise_numpy import (
-    BoolArray,
-    IntervalArray,
-    array,
-    zeros,
-    ones,
-    empty,
-    full,
-    eye,
-    identity,
-    diag,
-    linspace,
-    arange,
-    concatenate,
-    stack,
-    vstack,
-    hstack,
-    split,
-    where_impl,
-    from_raw_parts,
-    num_threads,
-    seed,
-    rand,
-    random_sample,
-    randn,
-    randint,
-    uniform,
-    normal,
-    det,
-    inv,
-    solve,
-    lstsq,
-    eig,
-    svd,
-    pinv,
-__version__,
-    )
-
 import builtins
-
 import struct as _struct
 
 import numpy as _np
@@ -60,43 +21,43 @@ import numpy as _np
 from precise_numpy._precise_numpy import (
     BoolArray,
     IntervalArray,
-    array,
-    zeros,
-    ones,
-    empty,
-    full,
-    eye,
-    identity,
-    diag,
-    linspace,
+    __version__,
     arange,
-    concatenate,
-    stack,
-    vstack,
-    hstack,
-    split,
-    where_impl,
-    from_raw_parts,
-    num_threads,
-    seed,
-    rand,
-    random_sample,
-    randn,
-    randint,
-    uniform,
-    normal,
-    det,
-    inv,
-    solve,
-    lstsq,
-    eig,
-    svd,
-    pinv,
+    array,
     cholesky,
+    concatenate,
+    cond,
+    det,
+    diag,
+    eig,
+    empty,
+    eye,
+    from_raw_parts,
+    full,
+    hstack,
+    identity,
+    inv,
+    linspace,
+    lstsq,
     matrix_power,
     matrix_rank,
-    cond,
-    __version__,
+    normal,
+    num_threads,
+    ones,
+    pinv,
+    rand,
+    randint,
+    randn,
+    random_sample,
+    seed,
+    solve,
+    split,
+    stack,
+    svd,
+    uniform,
+    vstack,
+    where_impl,
+    zeros,
 )
 
 
@@ -112,6 +73,7 @@ def _as_array(x):
 # -----------------------------------------------------------------------
 # NumPy interop (NEP18): np.asarray(IntervalArray) returns midpoints.
 # -----------------------------------------------------------------------
+
 
 def _to_numpy(self, dtype=None):
     """NEP18 __array__ protocol: convert midpoints to a numpy ndarray."""
@@ -296,7 +258,7 @@ def save(fname, arr):
         f.write(_struct.pack("<I", len(shape)))
         for d in shape:
             f.write(_struct.pack("<Q", d))
-        for m, r in zip(mid, rad):
+        for m, r in zip(mid, rad, strict=True):
             f.write(_struct.pack("<dd", m, r))
 
 
@@ -326,9 +288,9 @@ def savetxt(fname, arr, fmt="%.17g"):
         raise TypeError("savetxt() requires an IntervalArray")
     shape = " ".join(str(d) for d in arr.shape)
     with open(fname, "w") as f:
-        f.write("# precise_numpy shape %s\n" % shape)
-        for m, r in zip(arr.values(), arr.radii()):
-            f.write((fmt + " " + fmt + "\n") % (m, r))
+        f.write(f"# precise_numpy shape {shape}\n")
+        for m, r in zip(arr.values(), arr.radii(), strict=True):
+            f.write(f"{fmt % m} {fmt % r}\n")
 
 
 def loadtxt(fname):
@@ -449,6 +411,7 @@ __all__ = [
 # astype: convert IntervalArray to plain ndarray or keep interval view
 # -----------------------------------------------------------------------
 
+
 def astype(a, dtype=None):
     """Convert an IntervalArray to another representation.
 
@@ -478,6 +441,7 @@ def astype(a, dtype=None):
 # -----------------------------------------------------------------------
 # numpy-compatible I/O (.npy format: combined mid+rad array)
 # -----------------------------------------------------------------------
+
 
 def save_npy(fname, arr):
     """Save an IntervalArray as a numpy ``.npy`` file.
@@ -509,6 +473,7 @@ def load_npy(fname):
 # -----------------------------------------------------------------------
 # NumPy ufunc protocol (NEP-13): np.add, np.exp, np.sin, … on pnp arrays
 # -----------------------------------------------------------------------
+
 
 def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
     """Handle numpy ufunc calls involving IntervalArrays."""
@@ -673,14 +638,6 @@ def _np_linalg_eigvals(a):
     return evals
 
 
-@implements(_np.linalg.eigvals)
-def _np_linalg_eigvals(a):
-    if not isinstance(a, IntervalArray):
-        return NotImplemented
-    evals, _ = eig(a)
-    return evals
-
-
 @implements(_np.linalg.pinv)
 def _np_linalg_pinv(a, rcond=1e-15, hermitian=False):
     if not isinstance(a, IntervalArray):
@@ -784,7 +741,9 @@ def _np_squeeze(a, axis=None):
         return NotImplemented
     if axis is None:
         return a.reshape([d for d in a.shape if d != 1])
-    return a.reshape([1 if i == axis else d for i, d in enumerate(a.shape) if not (i == axis and d == 1)])
+    return a.reshape(
+        [1 if i == axis else d for i, d in enumerate(a.shape) if not (i == axis and d == 1)]
+    )
 
 
 @implements(_np.expand_dims)

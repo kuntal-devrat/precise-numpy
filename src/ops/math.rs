@@ -1,10 +1,8 @@
-use crate::error::Interval;
 use crate::array::IntervalArray;
-use crate::error::interval::{
-    next_down_n, next_up_n, sub_ru, LIBSM_ULP_ALLOWANCE,
-};
+use crate::error::interval::{next_down_n, next_up_n, sub_ru, LIBSM_ULP_ALLOWANCE};
+use crate::error::Interval;
 use crate::simd::vec_ops;
-use std::f64::consts::{PI, FRAC_PI_2};
+use std::f64::consts::{FRAC_PI_2, PI};
 
 /// Evaluate f(v) with round-to-nearest then expand downward by the libm
 /// ulp allowance, so the result rigorously encloses the true value of
@@ -175,7 +173,11 @@ pub fn ln_interval(iv: Interval, m: f64) -> (f64, f64) {
     if iv.hi <= 0.0 {
         return (f64::NAN, f64::NAN);
     }
-    let lo = if iv.lo > 0.0 { iv.lo } else { f64::MIN_POSITIVE };
+    let lo = if iv.lo > 0.0 {
+        iv.lo
+    } else {
+        f64::MIN_POSITIVE
+    };
     centered(f64::ln, m, eval_lo(f64::ln, lo), eval_hi(f64::ln, iv.hi))
 }
 
@@ -184,8 +186,17 @@ pub fn log2_interval(iv: Interval, m: f64) -> (f64, f64) {
     if iv.hi <= 0.0 {
         return (f64::NAN, f64::NAN);
     }
-    let lo = if iv.lo > 0.0 { iv.lo } else { f64::MIN_POSITIVE };
-    centered(f64::log2, m, eval_lo(f64::log2, lo), eval_hi(f64::log2, iv.hi))
+    let lo = if iv.lo > 0.0 {
+        iv.lo
+    } else {
+        f64::MIN_POSITIVE
+    };
+    centered(
+        f64::log2,
+        m,
+        eval_lo(f64::log2, lo),
+        eval_hi(f64::log2, iv.hi),
+    )
 }
 
 /// Compute the interval enclosure of log10(x) for an interval x.
@@ -193,8 +204,17 @@ pub fn log10_interval(iv: Interval, m: f64) -> (f64, f64) {
     if iv.hi <= 0.0 {
         return (f64::NAN, f64::NAN);
     }
-    let lo = if iv.lo > 0.0 { iv.lo } else { f64::MIN_POSITIVE };
-    centered(f64::log10, m, eval_lo(f64::log10, lo), eval_hi(f64::log10, iv.hi))
+    let lo = if iv.lo > 0.0 {
+        iv.lo
+    } else {
+        f64::MIN_POSITIVE
+    };
+    centered(
+        f64::log10,
+        m,
+        eval_lo(f64::log10, lo),
+        eval_hi(f64::log10, iv.hi),
+    )
 }
 
 /// Compute the interval enclosure of sqrt(x) for an interval x.
@@ -205,7 +225,12 @@ pub fn sqrt_interval(iv: Interval, m: f64) -> (f64, f64) {
         return (f64::NAN, f64::NAN);
     }
     let lo = if iv.lo > 0.0 { iv.lo } else { 0.0 };
-    centered(f64::sqrt, m, eval_lo(f64::sqrt, lo), eval_hi(f64::sqrt, iv.hi))
+    centered(
+        f64::sqrt,
+        m,
+        eval_lo(f64::sqrt, lo),
+        eval_hi(f64::sqrt, iv.hi),
+    )
 }
 
 /// Compute the interval enclosure of abs(x) for an interval x.

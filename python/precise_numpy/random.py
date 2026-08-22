@@ -1,7 +1,6 @@
 """Random number generation, mirroring numpy.random's core API."""
 
-from precise_numpy._precise_numpy import seed, rand, randn, randint, uniform, normal
-from precise_numpy._precise_numpy import random_sample
+from precise_numpy._precise_numpy import normal, rand, randint, randn, random_sample, seed, uniform
 
 # Aliases matching numpy.random names.
 random = random_sample

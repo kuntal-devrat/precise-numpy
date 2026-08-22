@@ -1,4 +1,4 @@
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::ptr::NonNull;
 use std::slice;
 
@@ -65,7 +65,11 @@ impl AlignedBuffer {
 
     /// Create directly from separate midpoint and radius slices (bulk memcpy).
     pub fn from_slices(midpoints: &[f64], radii: &[f64]) -> Self {
-        assert_eq!(midpoints.len(), radii.len(), "midpoints and radii must have same length");
+        assert_eq!(
+            midpoints.len(),
+            radii.len(),
+            "midpoints and radii must have same length"
+        );
         let len = midpoints.len();
         if len == 0 {
             return Self::new(0);

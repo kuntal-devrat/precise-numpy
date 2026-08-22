@@ -116,7 +116,10 @@ mod tests {
         let b = IntervalArray::from_f64_slice(&[0.75]);
         let c = Interval::exact(0.5 + 0.25);
         assert_eq!(cmp_interval(&Interval::exact(0.5), &c, Cmp::Eq), false);
-        assert_eq!(cmp_interval(&Interval::exact(0.5), &Interval::exact(0.5), Cmp::Eq), true);
+        assert_eq!(
+            cmp_interval(&Interval::exact(0.5), &Interval::exact(0.5), Cmp::Eq),
+            true
+        );
         let ab = compare_arrays(&a, &b, Cmp::Lt);
         assert_eq!(ab, vec![true]);
     }

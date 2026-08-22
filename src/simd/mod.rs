@@ -20,16 +20,22 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return add_f64_avx512(a, b, out); }
+                unsafe {
+                    return add_f64_avx512(a, b, out);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return add_f64_avx2(a, b, out); }
+                unsafe {
+                    return add_f64_avx2(a, b, out);
+                }
             }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            unsafe { return add_f64_neon(a, b, out); }
+            unsafe {
+                return add_f64_neon(a, b, out);
+            }
         }
 
         for i in 0..n {
@@ -47,16 +53,22 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return sub_f64_avx512(a, b, out); }
+                unsafe {
+                    return sub_f64_avx512(a, b, out);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return sub_f64_avx2(a, b, out); }
+                unsafe {
+                    return sub_f64_avx2(a, b, out);
+                }
             }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            unsafe { return sub_f64_neon(a, b, out); }
+            unsafe {
+                return sub_f64_neon(a, b, out);
+            }
         }
 
         for i in 0..n {
@@ -74,16 +86,22 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return mul_f64_avx512(a, b, out); }
+                unsafe {
+                    return mul_f64_avx512(a, b, out);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return mul_f64_avx2(a, b, out); }
+                unsafe {
+                    return mul_f64_avx2(a, b, out);
+                }
             }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            unsafe { return mul_f64_neon(a, b, out); }
+            unsafe {
+                return mul_f64_neon(a, b, out);
+            }
         }
 
         for i in 0..n {
@@ -101,10 +119,14 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return div_f64_avx512(a, b, out); }
+                unsafe {
+                    return div_f64_avx512(a, b, out);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return div_f64_avx2(a, b, out); }
+                unsafe {
+                    return div_f64_avx2(a, b, out);
+                }
             }
         }
 
@@ -210,7 +232,9 @@ pub mod vec_ops {
         {
             if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512dq") {
                 unsafe {
-                    return mul_intervals_avx512_fma(a_mids, a_rads, b_mids, b_rads, r_mids, r_rads);
+                    return mul_intervals_avx512_fma(
+                        a_mids, a_rads, b_mids, b_rads, r_mids, r_rads,
+                    );
                 }
             } else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                 unsafe {
@@ -257,7 +281,9 @@ pub mod vec_ops {
         {
             if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                 unsafe {
-                    return mul_scalar_avx2_fma(a_mids, a_rads, s_mid, s_rad, abs_s_mid, r_mids, r_rads);
+                    return mul_scalar_avx2_fma(
+                        a_mids, a_rads, s_mid, s_rad, abs_s_mid, r_mids, r_rads,
+                    );
                 }
             }
         }
@@ -413,16 +439,22 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return sqrt_f64_avx512(a, out); }
+                unsafe {
+                    return sqrt_f64_avx512(a, out);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return sqrt_f64_avx2(a, out); }
+                unsafe {
+                    return sqrt_f64_avx2(a, out);
+                }
             }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            unsafe { return sqrt_f64_neon(a, out); }
+            unsafe {
+                return sqrt_f64_neon(a, out);
+            }
         }
 
         for i in 0..n {
@@ -440,7 +472,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("fma") && is_x86_feature_detected!("avx2") {
-                unsafe { return fma_f64_avx2(a, b, c, out); }
+                unsafe {
+                    return fma_f64_avx2(a, b, c, out);
+                }
             }
         }
 
@@ -457,7 +491,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return abs_mul_f64_avx2(a, b, out); }
+                unsafe {
+                    return abs_mul_f64_avx2(a, b, out);
+                }
             }
         }
 
@@ -474,7 +510,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return add3_f64_avx2(a, b, c, out); }
+                unsafe {
+                    return add3_f64_avx2(a, b, c, out);
+                }
             }
         }
 
@@ -493,7 +531,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return abs_f64_avx2(a, out); }
+                unsafe {
+                    return abs_f64_avx2(a, out);
+                }
             }
         }
 
@@ -510,7 +550,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return neg_f64_avx2(a, out); }
+                unsafe {
+                    return neg_f64_avx2(a, out);
+                }
             }
         }
 
@@ -527,7 +569,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return scale_f64_avx2(a, scalar, out); }
+                unsafe {
+                    return scale_f64_avx2(a, scalar, out);
+                }
             }
         }
 
@@ -544,7 +588,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return add_scalar_f64_avx2(a, scalar, out); }
+                unsafe {
+                    return add_scalar_f64_avx2(a, scalar, out);
+                }
             }
         }
 
@@ -561,10 +607,14 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return sum_f64_avx512(a); }
+                unsafe {
+                    return sum_f64_avx512(a);
+                }
             }
             if is_x86_feature_detected!("avx2") {
-                unsafe { return sum_f64_avx2(a); }
+                unsafe {
+                    return sum_f64_avx2(a);
+                }
             }
         }
 
@@ -581,7 +631,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return max_f64_avx2(a); }
+                unsafe {
+                    return max_f64_avx2(a);
+                }
             }
         }
 
@@ -598,7 +650,9 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { return min_f64_avx2(a); }
+                unsafe {
+                    return min_f64_avx2(a);
+                }
             }
         }
 
@@ -614,10 +668,14 @@ pub mod vec_ops {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx512f") {
-                unsafe { return dot_f64_avx512(a, b); }
+                unsafe {
+                    return dot_f64_avx512(a, b);
+                }
             }
             if is_x86_feature_detected!("fma") && is_x86_feature_detected!("avx2") {
-                unsafe { return dot_f64_fma(a, b); }
+                unsafe {
+                    return dot_f64_fma(a, b);
+                }
             }
         }
 
@@ -1200,7 +1258,9 @@ pub mod vec_ops {
             i += 4;
         }
         while i < n {
-            *out.get_unchecked_mut(i) = a.get_unchecked(i).mul_add(*b.get_unchecked(i), *c.get_unchecked(i));
+            *out.get_unchecked_mut(i) = a
+                .get_unchecked(i)
+                .mul_add(*b.get_unchecked(i), *c.get_unchecked(i));
             i += 1;
         }
     }
@@ -1241,7 +1301,8 @@ pub mod vec_ops {
             i += 4;
         }
         while i < n {
-            *out.get_unchecked_mut(i) = *a.get_unchecked(i) + *b.get_unchecked(i) + *c.get_unchecked(i);
+            *out.get_unchecked_mut(i) =
+                *a.get_unchecked(i) + *b.get_unchecked(i) + *c.get_unchecked(i);
             i += 1;
         }
     }
@@ -1372,7 +1433,9 @@ pub mod vec_ops {
         let mut result = _mm_cvtsd_f64(max_sd);
         while i < n {
             let v = *a.get_unchecked(i);
-            if v > result { result = v; }
+            if v > result {
+                result = v;
+            }
             i += 1;
         }
         result
@@ -1398,7 +1461,9 @@ pub mod vec_ops {
         let mut result = _mm_cvtsd_f64(min_sd);
         while i < n {
             let v = *a.get_unchecked(i);
-            if v < result { result = v; }
+            if v < result {
+                result = v;
+            }
             i += 1;
         }
         result
