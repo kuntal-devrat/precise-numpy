@@ -45,9 +45,9 @@ def main():
         pnp_b = pnp.array(np_b.tolist())
 
         ops = [
-            ("Add", lambda: np_a + np_b, lambda: pnp_a + pnp_b),
-            ("Subtract", lambda: np_a - np_b, lambda: pnp_a - pnp_b),
-            ("Multiply", lambda: np_a * np_b, lambda: pnp_a * pnp_b),
+            ("Add", lambda a=np_a, b=np_b: a + b, lambda a=pnp_a, b=pnp_b: a + b),
+            ("Subtract", lambda a=np_a, b=np_b: a - b, lambda a=pnp_a, b=pnp_b: a - b),
+            ("Multiply", lambda a=np_a, b=np_b: a * b, lambda a=pnp_a, b=pnp_b: a * b),
         ]
 
         for i, (op_name, np_fn, pnp_fn) in enumerate(ops):
