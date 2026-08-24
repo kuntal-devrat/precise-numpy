@@ -893,6 +893,24 @@ class TestNumpyFunction(unittest.TestCase):
         self.assertIsInstance(c, pnp.IntervalArray)
         self.assertEqual(c.shape, (2, 2))
 
+    def test_np_squeeze(self):
+        import numpy as _np
+
+        a = pnp.ones([1, 2, 1, 3])
+        # Squeeze all 1-sized dimensions
+        r_all = _np.squeeze(a)
+        self.assertIsInstance(r_all, pnp.IntervalArray)
+        self.assertEqual(r_all.shape, (2, 3))
+
+        # Squeeze specific 1-sized dimensions
+        r_axis_0 = _np.squeeze(a, axis=0)
+        self.assertIsInstance(r_axis_0, pnp.IntervalArray)
+        self.assertEqual(r_axis_0.shape, (2, 1, 3))
+
+        r_axis_2 = _np.squeeze(a, axis=2)
+        self.assertIsInstance(r_axis_2, pnp.IntervalArray)
+        self.assertEqual(r_axis_2.shape, (1, 2, 3))
+
 
 class TestNpyIO(unittest.TestCase):
     def test_save_load_roundtrip(self):
