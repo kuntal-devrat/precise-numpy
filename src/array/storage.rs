@@ -30,8 +30,9 @@ impl AlignedBuffer {
                 layout: None,
             };
         }
-        let total = 2 * len;
-        let layout = Layout::from_size_align(total * std::mem::size_of::<f64>(), 64)
+        let total = len.checked_mul(2).expect("capacity overflow");
+        let size = total.checked_mul(std::mem::size_of::<f64>()).expect("capacity overflow");
+        let layout = Layout::from_size_align(size, 64)
             .expect("invalid layout");
         let ptr = unsafe { alloc_zeroed(layout) as *mut f64 };
         if ptr.is_null() {
@@ -184,7 +185,8 @@ impl Clone for AlignedBuffer {
             return Self::new(0);
         }
         let new_buf = Self::new(self.len);
-        let total_bytes = 2 * self.len * std::mem::size_of::<f64>();
+        let total = self.len.checked_mul(2).expect("capacity overflow");
+        let total_bytes = total.checked_mul(std::mem::size_of::<f64>()).expect("capacity overflow");
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.ptr.as_ptr() as *const u8,
@@ -278,5 +280,19 @@ mod tests {
         let buf = AlignedBuffer::new(0);
         let cloned = buf.clone();
         assert_eq!(cloned.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity overflow")]
+    fn test_new_overflow() {
+        // This will panic when calculating total if it overflows usize,
+        // or when calculating size if it overflows usize.
+        let _ = AlignedBuffer::new(usize::MAX / 16 + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity overflow")]
+    fn test_new_overflow_2() {
+        let _ = AlignedBuffer::new(usize::MAX / 2 + 1);
     }
 }
