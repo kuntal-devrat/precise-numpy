@@ -31,9 +31,10 @@ impl AlignedBuffer {
             };
         }
         let total = len.checked_mul(2).expect("capacity overflow");
-        let size = total.checked_mul(std::mem::size_of::<f64>()).expect("capacity overflow");
-        let layout = Layout::from_size_align(size, 64)
-            .expect("invalid layout");
+        let size = total
+            .checked_mul(std::mem::size_of::<f64>())
+            .expect("capacity overflow");
+        let layout = Layout::from_size_align(size, 64).expect("invalid layout");
         let ptr = unsafe { alloc_zeroed(layout) as *mut f64 };
         if ptr.is_null() {
             handle_alloc_error(layout);
@@ -186,7 +187,9 @@ impl Clone for AlignedBuffer {
         }
         let new_buf = Self::new(self.len);
         let total = self.len.checked_mul(2).expect("capacity overflow");
-        let total_bytes = total.checked_mul(std::mem::size_of::<f64>()).expect("capacity overflow");
+        let total_bytes = total
+            .checked_mul(std::mem::size_of::<f64>())
+            .expect("capacity overflow");
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.ptr.as_ptr() as *const u8,

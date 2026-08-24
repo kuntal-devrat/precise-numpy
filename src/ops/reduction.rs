@@ -330,7 +330,7 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     // inflated like the dgemm results below).
     let mut s_acc = 0.0f64;
     for t in 0..k {
-        s_acc = s_acc + a_rads[t] * b_rads[t];
+        s_acc += a_rads[t] * b_rads[t];
     }
     s_acc = next_up(s_acc * (1.0 + k as f64 * 2f64.powi(-53)));
 

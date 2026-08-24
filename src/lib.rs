@@ -1853,7 +1853,7 @@ impl PyIntervalArray {
         let rads = self.inner.data().radii();
         let flat: Vec<(f64, f64)> = (0..self.inner.len()).map(|i| (mids[i], rads[i])).collect();
         let mut offset = 0usize;
-        Ok(build_nested_lists(py, &flat, &shape, &mut offset)?)
+        build_nested_lists(py, &flat, &shape, &mut offset)
     }
 
     fn values(&self) -> Vec<f64> {
@@ -2241,7 +2241,7 @@ fn concatenate(
     let arrs = extract_arrays(arrays)?;
     let refs: Vec<IntervalArray> = arrs.iter().map(|a| a.borrow(py).inner.clone()).collect();
     let refs2: Vec<&IntervalArray> = refs.iter().collect();
-    let result = extra::concatenate(&refs2, axis).map_err(|e| PyValueError::new_err(e))?;
+    let result = extra::concatenate(&refs2, axis).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner: result })
 }
 
@@ -2250,7 +2250,7 @@ fn stack(py: Python<'_>, arrays: &Bound<'_, PyAny>, axis: usize) -> PyResult<PyI
     let arrs = extract_arrays(arrays)?;
     let refs: Vec<IntervalArray> = arrs.iter().map(|a| a.borrow(py).inner.clone()).collect();
     let refs2: Vec<&IntervalArray> = refs.iter().collect();
-    let result = extra::stack(&refs2, axis).map_err(|e| PyValueError::new_err(e))?;
+    let result = extra::stack(&refs2, axis).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner: result })
 }
 
@@ -2268,7 +2268,7 @@ fn hstack(py: Python<'_>, arrays: &Bound<'_, PyAny>) -> PyResult<PyIntervalArray
     }
     let axis = if refs[0].ndim() == 1 { 0 } else { 1 };
     let refs2: Vec<&IntervalArray> = refs.iter().collect();
-    let result = extra::concatenate(&refs2, axis).map_err(|e| PyValueError::new_err(e))?;
+    let result = extra::concatenate(&refs2, axis).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner: result })
 }
 
@@ -2291,7 +2291,7 @@ fn split(
             return Err(PyValueError::new_err("number of sections must be >= 1"));
         }
         let dim = inner.shape()[axis];
-        if dim % v != 0 {
+        if !dim.is_multiple_of(v) {
             return Err(PyValueError::new_err(format!(
                 "array split does not result in an equal division: array size {} is not divisible by {}",
                 dim, v
@@ -2305,7 +2305,7 @@ fn split(
             "indices_or_sections must be an int or a list of ints",
         ));
     };
-    let parts = extra::split(&inner, &indices, axis).map_err(|e| PyValueError::new_err(e))?;
+    let parts = extra::split(&inner, &indices, axis).map_err(PyValueError::new_err)?;
     let mut out = Vec::with_capacity(parts.len());
     for p in parts {
         out.push(PyIntervalArray { inner: p });
@@ -2432,7 +2432,7 @@ fn rand(
     size: Option<&Bound<'_, PyAny>>,
     extra: &Bound<'_, PyTuple>,
 ) -> PyResult<Py<PyAny>> {
-    random_size_dispatch(py, size, extra, || random::random_f64())
+    random_size_dispatch(py, size, extra, random::random_f64)
 }
 
 #[pyfunction(signature = (size=None, *extra))]
@@ -2441,7 +2441,7 @@ fn random_sample(
     size: Option<&Bound<'_, PyAny>>,
     extra: &Bound<'_, PyTuple>,
 ) -> PyResult<Py<PyAny>> {
-    random_size_dispatch(py, size, extra, || random::random_f64())
+    random_size_dispatch(py, size, extra, random::random_f64)
 }
 
 #[pyfunction(signature = (size=None, *extra))]
@@ -2450,7 +2450,7 @@ fn randn(
     size: Option<&Bound<'_, PyAny>>,
     extra: &Bound<'_, PyTuple>,
 ) -> PyResult<Py<PyAny>> {
-    random_size_dispatch(py, size, extra, || random::random_normal())
+    random_size_dispatch(py, size, extra, random::random_normal)
 }
 
 #[pyfunction(signature = (low, high, size=None, *extra))]
@@ -2538,13 +2538,13 @@ fn random_size_dispatch(
 
 #[pyfunction]
 fn det(a: &Bound<'_, PyIntervalArray>) -> PyResult<(f64, f64)> {
-    let iv = linalg::det(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let iv = linalg::det(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok((iv.midpoint(), iv.radius()))
 }
 
 #[pyfunction]
 fn inv(a: &Bound<'_, PyIntervalArray>) -> PyResult<PyIntervalArray> {
-    let inner = linalg::inv(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let inner = linalg::inv(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
@@ -2554,7 +2554,7 @@ fn solve(
     b: &Bound<'_, PyIntervalArray>,
 ) -> PyResult<PyIntervalArray> {
     let inner = linalg::solve(&a.borrow().inner, &b.borrow().inner)
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
@@ -2564,13 +2564,13 @@ fn lstsq(
     b: &Bound<'_, PyIntervalArray>,
 ) -> PyResult<PyIntervalArray> {
     let inner = linalg::lstsq(&a.borrow().inner, &b.borrow().inner)
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
 #[pyfunction]
 fn pinv(a: &Bound<'_, PyIntervalArray>) -> PyResult<PyIntervalArray> {
-    let inner = linalg::pinv(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let inner = linalg::pinv(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
@@ -2593,7 +2593,7 @@ fn eig<'py>(py: Python<'py>, a: &Bound<'py, PyIntervalArray>) -> PyResult<Py<PyA
 
 #[pyfunction]
 fn svd<'py>(py: Python<'py>, a: &Bound<'py, PyIntervalArray>) -> PyResult<Py<PyAny>> {
-    let (u, s, vt) = linalg::svd(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let (u, s, vt) = linalg::svd(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok((
         Py::new(py, PyIntervalArray { inner: u })?,
         Py::new(py, PyIntervalArray { inner: s })?,
@@ -2605,25 +2605,25 @@ fn svd<'py>(py: Python<'py>, a: &Bound<'py, PyIntervalArray>) -> PyResult<Py<PyA
 
 #[pyfunction]
 fn cholesky(a: &Bound<'_, PyIntervalArray>) -> PyResult<PyIntervalArray> {
-    let inner = linalg::cholesky(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let inner = linalg::cholesky(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
 #[pyfunction(signature = (a, n))]
 fn matrix_power(a: &Bound<'_, PyIntervalArray>, n: i64) -> PyResult<PyIntervalArray> {
-    let inner = linalg::matrix_power(&a.borrow().inner, n).map_err(|e| PyValueError::new_err(e))?;
+    let inner = linalg::matrix_power(&a.borrow().inner, n).map_err(PyValueError::new_err)?;
     Ok(PyIntervalArray { inner })
 }
 
 #[pyfunction]
 fn matrix_rank<'py>(py: Python<'py>, a: &Bound<'_, PyIntervalArray>) -> PyResult<Py<PyAny>> {
-    let rank = linalg::matrix_rank(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let rank = linalg::matrix_rank(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok((rank as u64).to_object(py).into_any())
 }
 
 #[pyfunction]
 fn cond(a: &Bound<'_, PyIntervalArray>) -> PyResult<(f64, f64)> {
-    let iv = linalg::cond(&a.borrow().inner).map_err(|e| PyValueError::new_err(e))?;
+    let iv = linalg::cond(&a.borrow().inner).map_err(PyValueError::new_err)?;
     Ok((iv.midpoint(), iv.radius()))
 }
 
