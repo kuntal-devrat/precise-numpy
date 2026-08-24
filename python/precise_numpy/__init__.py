@@ -14,6 +14,7 @@ Example:
 """
 
 import builtins
+import re as _re
 import struct as _struct
 
 import numpy as _np
@@ -295,20 +296,29 @@ def savetxt(fname, arr, fmt="%.17g"):
 
 def loadtxt(fname):
     """Read an IntervalArray written by `savetxt`."""
-    shape = None
-    mid, rad = [], []
     with open(fname) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                if line.startswith("# precise_numpy shape"):
-                    shape = [int(tok) for tok in line.replace("# precise_numpy shape", "").split()]
-                continue
-            m, r = line.split()
-            mid.append(float(m))
-            rad.append(float(r))
+        content = f.read()
+
+    shape_prefix = "# precise_numpy shape"
+    idx = content.find(shape_prefix)
+    shape = None
+    if idx != -1:
+        end_idx = content.find("\n", idx)
+        if end_idx == -1:
+            end_idx = len(content)
+        shape_str = content[idx + len(shape_prefix) : end_idx]
+        shape = [int(tok) for tok in shape_str.split()]
+
     if shape is None:
         raise ValueError("not a precise_numpy savetxt file (missing shape header)")
+
+    content_no_comments = _re.sub(r"#.*", "", content)
+    tokens = content_no_comments.split()
+
+    floats = list(map(float, tokens))
+    mid = floats[0::2]
+    rad = floats[1::2]
+
     return from_raw_parts(mid, rad, shape)
 
 
