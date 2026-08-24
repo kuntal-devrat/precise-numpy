@@ -893,6 +893,15 @@ class TestNumpyFunction(unittest.TestCase):
         self.assertIsInstance(c, pnp.IntervalArray)
         self.assertEqual(c.shape, (2, 2))
 
+    def test_np_rollaxis(self):
+        import numpy as _np
+
+        a = pnp.array([[1.0, 2.0], [3.0, 4.0]])
+        r = _np.rollaxis(a, 1)
+        self.assertIsInstance(r, pnp.IntervalArray)
+        self.assertEqual(r.shape, (2, 2))
+        self.assertEqual(r.values(), [1.0, 3.0, 2.0, 4.0])
+
 
 class TestNpyIO(unittest.TestCase):
     def test_save_load_roundtrip(self):
