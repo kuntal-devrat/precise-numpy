@@ -13,8 +13,10 @@ Example:
     (2.1, 4.440892098500626e-16)
 """
 
+import array as _array
 import builtins
 import struct as _struct
+import sys as _sys
 
 import numpy as _np
 
@@ -258,8 +260,15 @@ def save(fname, arr):
         f.write(_struct.pack("<I", len(shape)))
         for d in shape:
             f.write(_struct.pack("<Q", d))
-        for m, r in zip(mid, rad, strict=True):
-            f.write(_struct.pack("<dd", m, r))
+        n = len(mid)
+        if n > 0:
+            interleaved = [0.0] * (n * 2)
+            interleaved[0::2] = mid
+            interleaved[1::2] = rad
+            a = _array.array("d", interleaved)
+            if _sys.byteorder != "little":
+                a.byteswap()
+            a.tofile(f)
 
 
 def load(fname):
