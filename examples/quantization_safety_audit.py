@@ -19,7 +19,6 @@ class PrecisionAuditor:
         """Compare standard NumPy float64 execution against precise-numpy error bounds."""
         max_rel_err = pnp_result.max_relative_error()
         max_rad = pnp_result.max_radius()
-        is_exact = pnp_result.is_exact()
         
         # Calculate drift between float64 value and interval midpoint
         pnp_mids = np.array(pnp_result.values())
