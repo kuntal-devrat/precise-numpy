@@ -6,7 +6,6 @@ Detects exact lines of code where floating-point drift, catastrophic cancellatio
 or numerical precision degradation occurs in AI models or scientific pipelines.
 """
 
-import time
 import numpy as np
 import precise_numpy as pnp
 
