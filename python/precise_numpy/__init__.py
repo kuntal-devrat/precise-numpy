@@ -15,6 +15,7 @@ Example:
 
 import array as _array
 import builtins
+import math
 import struct as _struct
 import sys as _sys
 
@@ -279,9 +280,7 @@ def load(fname):
             raise ValueError("not a precise_numpy save file")
         (ndim,) = _struct.unpack("<I", f.read(4))
         shape = list(_struct.unpack("<" + "Q" * ndim, f.read(8 * ndim)))
-        total = 1
-        for d in shape:
-            total *= d
+        total = math.prod(shape)
         data = f.read(16 * total)
         if len(data) != 16 * total:
             raise ValueError("file truncated")
