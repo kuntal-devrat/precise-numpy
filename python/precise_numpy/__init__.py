@@ -13,11 +13,9 @@ Example:
     (2.1, 4.440892098500626e-16)
 """
 
-import array as _array
 import builtins
-import math
+import re as _re
 import struct as _struct
-import sys as _sys
 
 import numpy as _np
 
@@ -261,15 +259,8 @@ def save(fname, arr):
         f.write(_struct.pack("<I", len(shape)))
         for d in shape:
             f.write(_struct.pack("<Q", d))
-        n = len(mid)
-        if n > 0:
-            interleaved = [0.0] * (n * 2)
-            interleaved[0::2] = mid
-            interleaved[1::2] = rad
-            a = _array.array("d", interleaved)
-            if _sys.byteorder != "little":
-                a.byteswap()
-            a.tofile(f)
+        for m, r in zip(mid, rad, strict=True):
+            f.write(_struct.pack("<dd", m, r))
 
 
 def load(fname):
@@ -280,7 +271,9 @@ def load(fname):
             raise ValueError("not a precise_numpy save file")
         (ndim,) = _struct.unpack("<I", f.read(4))
         shape = list(_struct.unpack("<" + "Q" * ndim, f.read(8 * ndim)))
-        total = math.prod(shape)
+        total = 1
+        for d in shape:
+            total *= d
         data = f.read(16 * total)
         if len(data) != 16 * total:
             raise ValueError("file truncated")

@@ -231,9 +231,7 @@ fn lu_solve_interval(m: &mut Vec<Interval>, n: usize, b: &[Interval]) -> Option<
                 m[row_major(n, n, col, j)] = m[row_major(n, n, pivot, j)];
                 m[row_major(n, n, pivot, j)] = tmp;
             }
-            let tmp = x[col];
-            x[col] = x[pivot];
-            x[pivot] = tmp;
+            x.swap(col, pivot);
         }
         let pivot_iv = m[row_major(n, n, col, col)];
         for r in (col + 1)..n {
@@ -1108,7 +1106,7 @@ pub fn eig_general(a: &IntervalArray) -> Result<(IntervalArray, IntervalArray), 
     }
     let mut evec_rads = Vec::with_capacity(n * n);
     for j in 0..n {
-        evec_rads.extend(std::iter::repeat(ev_rads[j]).take(n));
+        evec_rads.extend(std::iter::repeat_n(ev_rads[j], n));
     }
     let evecs = IntervalArray::from_raw_parts(&vecs, &evec_rads, &[n, n]);
     Ok((evals, evecs))
@@ -1532,7 +1530,7 @@ mod tests {
         for col in 0..2 {
             let lam = evals.get(col);
             let v0 = evecs.get(col);
-            let v1 = evecs.get(1 * 2 + col);
+            let v1 = evecs.get(2 + col);
             let av0 = m.get(0) * v0 + m.get(1) * v1;
             let av1 = m.get(2) * v0 + m.get(3) * v1;
             let lv0 = lam * v0;

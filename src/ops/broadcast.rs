@@ -44,9 +44,8 @@ pub fn broadcast_shapes_many(shapes: &[&[usize]]) -> Option<Vec<usize>> {
 
 /// Broadcast an array to a target shape by materializing repeated values.
 pub fn broadcast_to(a: &IntervalArray, shape: &[usize]) -> IntervalArray {
-    debug_assert_eq!(
-        a.len() == 1 || broadcast_shapes(a.shape(), shape).is_some(),
-        true
+    debug_assert!(
+        a.len() == 1 || broadcast_shapes(a.shape(), shape).is_some()
     );
     let target_total: usize = shape.iter().product();
     let a_total = a.len();

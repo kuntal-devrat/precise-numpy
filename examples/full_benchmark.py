@@ -38,9 +38,9 @@ for n in sizes:
     pnp_a = pnp.array(np_a.tolist())
     pnp_b = pnp.array(np_b.tolist())
     ops = [
-        ('Add', lambda a=np_a, b=np_b: a + b, lambda a=pnp_a, b=pnp_b: a + b),
-        ('Subtract', lambda a=np_a, b=np_b: a - b, lambda a=pnp_a, b=pnp_b: a - b),
-        ('Multiply', lambda a=np_a, b=np_b: a * b, lambda a=pnp_a, b=pnp_b: a * b),
+        ('Add', lambda: np_a + np_b, lambda: pnp_a + pnp_b),
+        ('Subtract', lambda: np_a - np_b, lambda: pnp_a - pnp_b),
+        ('Multiply', lambda: np_a * np_b, lambda: pnp_a * pnp_b),
     ]
     for i, (name, np_fn, pnp_fn) in enumerate(ops):
         np_t = bench(np_fn)
@@ -63,9 +63,9 @@ for n in sizes:
     np_a = np.random.rand(n) * 2.0
     pnp_a = pnp.array(np_a.tolist())
     ops = [
-        ('sin', lambda a=np_a: np.sin(a), lambda a=pnp_a: a.sin()),
-        ('exp', lambda a=np_a: np.exp(a), lambda a=pnp_a: a.exp()),
-        ('sqrt', lambda a=np_a: np.sqrt(a), lambda a=pnp_a: a.sqrt()),
+        ('sin', lambda: np.sin(np_a), lambda: pnp_a.sin()),
+        ('exp', lambda: np.exp(np_a), lambda: pnp_a.exp()),
+        ('sqrt', lambda: np.sqrt(np_a), lambda: pnp_a.sqrt()),
     ]
     for i, (name, np_fn, pnp_fn) in enumerate(ops):
         np_t = bench(np_fn)
@@ -88,8 +88,8 @@ for n in sizes:
     np_a = np.random.rand(n)
     pnp_a = pnp.array(np_a.tolist())
     ops = [
-        ('sum', lambda a=np_a: a.sum(), lambda a=pnp_a: a.sum()),
-        ('mean', lambda a=np_a: a.mean(), lambda a=pnp_a: a.mean()),
+        ('sum', lambda: np_a.sum(), lambda: pnp_a.sum()),
+        ('mean', lambda: np_a.mean(), lambda: pnp_a.mean()),
     ]
     for i, (name, np_fn, pnp_fn) in enumerate(ops):
         np_t = bench(np_fn)
@@ -113,8 +113,8 @@ for sz in [64, 128, 256]:
     np_m2 = np.random.rand(sz, sz)
     pnp_m1 = pnp.array(np_m1.flatten().tolist()).reshape([sz, sz])
     pnp_m2 = pnp.array(np_m2.flatten().tolist()).reshape([sz, sz])
-    np_t = bench(lambda m1=np_m1, m2=np_m2: m1 @ m2)
-    pnp_t = bench(lambda m1=pnp_m1, m2=pnp_m2: m1.matmul(m2))
+    np_t = bench(lambda: np_m1 @ np_m2)
+    pnp_t = bench(lambda: pnp_m1.matmul(pnp_m2))
     ratio = pnp_t / np_t
     verdict = 'CLOSE' if ratio < 3 else 'GAP' if ratio < 10 else 'BIG GAP'
     label = f'{sz}x{sz}'

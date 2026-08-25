@@ -115,10 +115,9 @@ mod tests {
         let a = IntervalArray::from_f64_slice(&[0.5]);
         let b = IntervalArray::from_f64_slice(&[0.75]);
         let c = Interval::exact(0.5 + 0.25);
-        assert_eq!(cmp_interval(&Interval::exact(0.5), &c, Cmp::Eq), false);
-        assert_eq!(
-            cmp_interval(&Interval::exact(0.5), &Interval::exact(0.5), Cmp::Eq),
-            true
+        assert!(!cmp_interval(&Interval::exact(0.5), &c, Cmp::Eq));
+        assert!(
+            cmp_interval(&Interval::exact(0.5), &Interval::exact(0.5), Cmp::Eq)
         );
         let ab = compare_arrays(&a, &b, Cmp::Lt);
         assert_eq!(ab, vec![true]);
@@ -128,19 +127,19 @@ mod tests {
     fn test_wide_overlap() {
         let x = Interval::from_midpoint_radius(1.0, 0.5); // [0.5, 1.5]
         let y = Interval::from_midpoint_radius(1.2, 0.5); // [0.7, 1.7]
-        assert_eq!(cmp_interval(&x, &y, Cmp::Eq), true);
-        assert_eq!(cmp_interval(&x, &y, Cmp::Lt), false);
-        assert_eq!(cmp_interval(&y, &x, Cmp::Lt), false);
+        assert!(cmp_interval(&x, &y, Cmp::Eq));
+        assert!(!cmp_interval(&x, &y, Cmp::Lt));
+        assert!(!cmp_interval(&y, &x, Cmp::Lt));
     }
 
     #[test]
     fn test_disjoint() {
         let x = Interval::exact(1.0);
         let y = Interval::exact(3.0);
-        assert_eq!(cmp_interval(&x, &y, Cmp::Eq), false);
-        assert_eq!(cmp_interval(&x, &y, Cmp::Lt), true);
-        assert_eq!(cmp_interval(&x, &y, Cmp::Le), true);
-        assert_eq!(cmp_interval(&y, &x, Cmp::Gt), true);
-        assert_eq!(cmp_interval(&y, &x, Cmp::Ge), true);
+        assert!(!cmp_interval(&x, &y, Cmp::Eq));
+        assert!(cmp_interval(&x, &y, Cmp::Lt));
+        assert!(cmp_interval(&x, &y, Cmp::Le));
+        assert!(cmp_interval(&y, &x, Cmp::Gt));
+        assert!(cmp_interval(&y, &x, Cmp::Ge));
     }
 }

@@ -330,7 +330,7 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     // inflated like the dgemm results below).
     let mut s_acc = 0.0f64;
     for t in 0..k {
-        s_acc = s_acc + a_rads[t] * b_rads[t];
+        s_acc += a_rads[t] * b_rads[t];
     }
     s_acc = next_up(s_acc * (1.0 + k as f64 * 2f64.powi(-53)));
 
@@ -550,7 +550,7 @@ mod tests {
         let c = matmul(&a, &b);
         assert_eq!(c.shape(), &[300, 0]);
         let d = IntervalArray::from_f64_vec(&Vec::new(), &[0, 2]);
-        let e = IntervalArray::from_f64_vec(&vec![1.0; 2 * 3], &[2, 3]);
+        let e = IntervalArray::from_f64_vec(&[1.0; 2 * 3], &[2, 3]);
         assert_eq!(matmul(&d, &e).shape(), &[0, 3]);
     }
 
