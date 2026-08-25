@@ -875,6 +875,27 @@ class TestNumpyFunction(unittest.TestCase):
         r = _np.sum(a)
         self.assertAlmostEqual(r[0], 6.0)
 
+    def test_np_expand_dims(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0, 3.0])
+        r0 = _np.expand_dims(a, axis=0)
+        self.assertIsInstance(r0, pnp.IntervalArray)
+        self.assertEqual(r0.shape, (1, 3))
+        self.assertEqual(r0.values(), [1.0, 2.0, 3.0])
+
+        r1 = _np.expand_dims(a, axis=1)
+        self.assertIsInstance(r1, pnp.IntervalArray)
+        self.assertEqual(r1.shape, (3, 1))
+
+        rn1 = _np.expand_dims(a, axis=-1)
+        self.assertIsInstance(rn1, pnp.IntervalArray)
+        self.assertEqual(rn1.shape, (3, 1))
+
+        rn2 = _np.expand_dims(a, axis=-2)
+        self.assertIsInstance(rn2, pnp.IntervalArray)
+        self.assertEqual(rn2.shape, (1, 3))
+
     def test_np_concatenate(self):
         import numpy as _np
 
