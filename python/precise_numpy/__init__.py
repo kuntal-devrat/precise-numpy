@@ -157,6 +157,13 @@ trunc = _unary("trunc")
 round_ = _unary("round")
 sqrt = _unary("sqrt")
 exp = _unary("exp")
+
+
+def exp2(a):
+    """Base-2 exponential 2^x."""
+    return 2.0 ** _as_array(a)
+
+
 ln = _unary("ln")
 log = ln  # numpy-compatible alias
 log2 = _unary("log2")
@@ -194,9 +201,44 @@ def reshape(a, *shape):
     return _as_array(a).reshape(dims)
 
 
+def squeeze(a, axis=None):
+    """Remove single-dimensional entries from the shape of an array."""
+    arr = _as_array(a)
+    shape = list(arr.shape)
+    if axis is None:
+        new_shape = [d for d in shape if d != 1]
+    else:
+        if isinstance(axis, int):
+            axes = [axis]
+        elif isinstance(axis, (tuple, list)):
+            axes = list(axis)
+        else:
+            raise TypeError("axis must be None, int, or tuple/list of ints")
+        ndim = len(shape)
+        norm_axes = []
+        for ax in axes:
+            if not isinstance(ax, int):
+                raise TypeError("axis must be an integer")
+            if ax < -ndim or ax >= ndim:
+                raise ValueError(f"axis {ax} is out of bounds for array of dimension {ndim}")
+            ax_norm = ax % ndim
+            if ax_norm in norm_axes:
+                raise ValueError(f"duplicate axis {ax} in squeeze")
+            if shape[ax_norm] != 1:
+                raise ValueError(f"cannot select an axis to squeeze out which has size not equal to one: {ax}")
+            norm_axes.append(ax_norm)
+        new_shape = [d for i, d in enumerate(shape) if i not in norm_axes]
+    return arr.reshape(new_shape)
+
+
 def sum_(a, axis=None):
     """Sum over all elements or along one axis."""
     return _as_array(a).sum(axis=axis)
+
+
+def cumsum(a, axis=None):
+    """Return the cumulative sum of the elements along a given axis."""
+    return _as_array(a).cumsum(axis=axis)
 
 
 def mean(a, axis=None):
@@ -373,6 +415,7 @@ __all__ = [
     "round_",
     "sqrt",
     "exp",
+    "exp2",
     "ln",
     "log",
     "log2",
@@ -396,7 +439,9 @@ __all__ = [
     "matmul",
     "clip",
     "reshape",
+    "squeeze",
     "sum_",
+    "cumsum",
     "mean",
     "prod",
     "var",
@@ -501,7 +546,7 @@ def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         "rint": lambda a: round_(a),
         "sign": lambda a: sign(a),
         "exp": lambda a: exp(a),
-        "exp2": lambda a: exp(a) ** 2,
+        "exp2": lambda a: 2.0 ** a,
         "log": lambda a: ln(a),
         "log2": lambda a: log2(a),
         "log10": lambda a: log10(a),
@@ -747,11 +792,7 @@ def _np_reshape(a, newshape, order="C"):
 def _np_squeeze(a, axis=None):
     if not isinstance(a, IntervalArray):
         return NotImplemented
-    if axis is None:
-        return a.reshape([d for d in a.shape if d != 1])
-    return a.reshape(
-        [1 if i == axis else d for i, d in enumerate(a.shape) if not (i == axis and d == 1)]
-    )
+    return squeeze(a, axis=axis)
 
 
 @implements(_np.expand_dims)
@@ -767,10 +808,14 @@ def _np_expand_dims(a, axis):
 
 @implements(_np.rollaxis)
 def _np_rollaxis(a, axis, start=0):
+    return NotImplemented
+
+
+@implements(_np.cumsum)
+def _np_cumsum(a, axis=None):
     if not isinstance(a, IntervalArray):
         return NotImplemented
-    # simplified: just use transpose for single-axis roll
-    return a.transpose()
+    return cumsum(a, axis=axis)
 
 
 def __array_function__(self, func, types, args, kwargs):
@@ -783,3 +828,4 @@ def __array_function__(self, func, types, args, kwargs):
 
 
 IntervalArray.__array_function__ = __array_function__
+IntervalArray.squeeze = lambda self, axis=None: squeeze(self, axis=axis)

@@ -91,10 +91,6 @@ pub fn random_int(low: i64, high: i64) -> i64 {
     with_rng(|r| low + (r.next_u64() % span) as i64)
 }
 
-fn shape_of(size: Option<Vec<usize>>) -> Vec<usize> {
-    size.unwrap_or_else(|| vec![1])
-}
-
 fn to_array(vals: Vec<f64>, shape: &[usize]) -> IntervalArray {
     let rads = vec![0.0f64; vals.len()];
     IntervalArray::from_raw_parts(&vals, &rads, shape)
@@ -133,10 +129,6 @@ pub fn randint_array(low: i64, high: i64, size: &[usize]) -> IntervalArray {
     let n: usize = size.iter().product();
     let vals: Vec<f64> = (0..n).map(|_| random_int(low, high) as f64).collect();
     to_array(vals, size)
-}
-
-pub fn shape_of_scalar() -> Vec<usize> {
-    vec![1]
 }
 
 #[cfg(test)]

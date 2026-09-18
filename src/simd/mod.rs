@@ -345,9 +345,10 @@ pub mod vec_ops {
             let am = a_mids[i];
             let bm = b_mids[i];
             let s = am - bm;
+            let neg_bm = -bm;
             let bv = s - am;
             let av = s - bv;
-            let br = bm - bv;
+            let br = neg_bm - bv;
             let ar = am - av;
             let err = ar + br;
             r_mids[i] = s;

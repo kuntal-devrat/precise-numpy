@@ -321,18 +321,13 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
     let mut t_ba = vec![0.0f64; m * n];
     let mut t_abs = vec![0.0f64; m * n];
 
+    let mut t_rad_rad = vec![0.0f64; m * n];
+
     parallel_dgemm(m, k, n, a_mids, b_mids, &mut r_mids);
     parallel_dgemm(m, k, n, &a_abs, b_rads, &mut t_ab);
     parallel_dgemm(m, k, n, a_rads, &b_abs, &mut t_ba);
     parallel_dgemm(m, k, n, &a_abs, &b_abs, &mut t_abs);
-
-    // Σ_t rad_a_t·rad_b_t: constant for every output element (RTN, then
-    // inflated like the dgemm results below).
-    let mut s_acc = 0.0f64;
-    for t in 0..k {
-        s_acc = s_acc + a_rads[t] * b_rads[t];
-    }
-    s_acc = next_up(s_acc * (1.0 + k as f64 * 2f64.powi(-53)));
+    parallel_dgemm(m, k, n, a_rads, b_rads, &mut t_rad_rad);
 
     // Error-term coefficient and final inflation factor (see doc comment).
     let err_c = 2f64.powi(-53) * (k as f64 + 1.0);
@@ -340,7 +335,7 @@ pub fn matmul(a: &IntervalArray, b: &IntervalArray) -> IntervalArray {
 
     for idx in 0..m * n {
         let mid = r_mids[idx];
-        let mut rad = (t_ab[idx] + t_ba[idx]) + (s_acc + err_c * t_abs[idx]);
+        let mut rad = (t_ab[idx] + t_ba[idx]) + (t_rad_rad[idx] + err_c * t_abs[idx]);
         rad = next_up(rad * inflate);
         // Overflow/NaN anywhere in the chain: the interval becomes the
         // entire real line rather than an unsound finite enclosure.
@@ -566,5 +561,27 @@ mod tests {
                 assert!((out.get(1).midpoint() - 39.0).abs() < 1e-10);
             }
         }
+    }
+
+    #[test]
+    fn test_matmul_different_row_radii() {
+        // A has shape [2, 2]:
+        // row 0 has radii 0.0, row 1 has radii 1.0
+        let a = IntervalArray::from_raw_parts(
+            &[1.0, 1.0, 1.0, 1.0],
+            &[0.0, 0.0, 1.0, 1.0],
+            &[2, 2],
+        );
+        // B has shape [2, 2] with radii 1.0 everywhere
+        let b = IntervalArray::from_raw_parts(
+            &[1.0, 1.0, 1.0, 1.0],
+            &[1.0, 1.0, 1.0, 1.0],
+            &[2, 2],
+        );
+        let c = matmul(&a, &b);
+        let rad_row0 = c.get(0).radius();
+        let rad_row1 = c.get(2).radius();
+        assert!(rad_row1 > rad_row0);
+        assert!(rad_row1 >= 2.0);
     }
 }

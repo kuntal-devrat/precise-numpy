@@ -980,10 +980,73 @@ class TestAstype(unittest.TestCase):
         self.assertEqual(list(r), [1, 2])
 
 
+class TestSqueeze(unittest.TestCase):
+    def test_squeeze_all(self):
+        a = pnp.zeros([1, 3, 1, 2])
+        sq = pnp.squeeze(a)
+        self.assertEqual(sq.shape, (3, 2))
+        self.assertEqual(a.squeeze().shape, (3, 2))
+
+    def test_squeeze_axis(self):
+        import numpy as _np
+
+        a = pnp.zeros([1, 3, 1, 2])
+        self.assertEqual(pnp.squeeze(a, axis=0).shape, (3, 1, 2))
+        self.assertEqual(pnp.squeeze(a, axis=2).shape, (1, 3, 2))
+        self.assertEqual(pnp.squeeze(a, axis=-2).shape, (1, 3, 2))
+        self.assertEqual(pnp.squeeze(a, axis=(0, 2)).shape, (3, 2))
+        self.assertEqual(_np.squeeze(a, axis=0).shape, (3, 1, 2))
+
+    def test_squeeze_invalid_axis(self):
+        a = pnp.zeros([1, 3, 1, 2])
+        with self.assertRaises(ValueError):
+            pnp.squeeze(a, axis=1)
+        with self.assertRaises(ValueError):
+            pnp.squeeze(a, axis=10)
+
+
+class TestExp2(unittest.TestCase):
+    def test_exp2(self):
+        import numpy as _np
+
+        a = pnp.array([0.0, 1.0, 2.0, 3.0])
+        r = pnp.exp2(a)
+        self.assertAlmostEqual(r.get(0)[0], 1.0)
+        self.assertAlmostEqual(r.get(1)[0], 2.0)
+        self.assertAlmostEqual(r.get(2)[0], 4.0)
+        self.assertAlmostEqual(r.get(3)[0], 8.0)
+
+        # NEP-13 ufunc
+        r2 = _np.exp2(a)
+        self.assertAlmostEqual(r2.get(0)[0], 1.0)
+        self.assertAlmostEqual(r2.get(1)[0], 2.0)
+        self.assertAlmostEqual(r2.get(2)[0], 4.0)
+        self.assertAlmostEqual(r2.get(3)[0], 8.0)
+
+
+class TestCumsum(unittest.TestCase):
+    def test_cumsum(self):
+        import numpy as _np
+
+        a = pnp.array([1.0, 2.0, 3.0])
+        c = pnp.cumsum(a)
+        self.assertEqual(c.values(), [1.0, 3.0, 6.0])
+
+        c2 = _np.cumsum(a)
+        self.assertEqual(c2.values(), [1.0, 3.0, 6.0])
+
+
+class TestExports(unittest.TestCase):
+    def test_all_symbols_exist(self):
+        for name in pnp.__all__:
+            self.assertTrue(hasattr(pnp, name), f"pnp has no attribute '{name}' listed in __all__")
+
+
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pnp.__version__, "1.0.0")
+        self.assertEqual(pnp.__version__, "1.0.1")
 
 
 if __name__ == "__main__":
     unittest.main()
+

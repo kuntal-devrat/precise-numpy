@@ -198,19 +198,36 @@ pub fn add_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
     let s_rad = s.radius();
     let n = a.len();
 
-    for i in 0..n {
-        let am = a_mids[i];
-        let t = am + s_mid;
-        let bv = t - am;
-        let av = t - bv;
-        let br = s_mid - bv;
-        let ar = am - av;
-        let err = ar + br;
-        r_mids[i] = t;
-        r_rads[i] = crate::error::interval::add_ru_chain(
-            crate::error::interval::add_ru_chain(a_rads[i], s_rad),
-            err.abs(),
-        );
+    let kernel = |a_m: &[f64], a_r: &[f64], r_m: &mut [f64], r_r: &mut [f64]| {
+        for i in 0..a_m.len() {
+            let am = a_m[i];
+            let t = am + s_mid;
+            let bv = t - am;
+            let av = t - bv;
+            let br = s_mid - bv;
+            let ar = am - av;
+            let err = ar + br;
+            r_m[i] = t;
+            r_r[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(a_r[i], s_rad),
+                err.abs(),
+            );
+        }
+    };
+
+    if n >= vec_ops::PAR_THRESHOLD {
+        const CHUNK: usize = 8192;
+        r_mids
+            .par_chunks_mut(CHUNK)
+            .zip(r_rads.par_chunks_mut(CHUNK))
+            .enumerate()
+            .for_each(|(chunk_idx, (rm, rr))| {
+                let start = chunk_idx * CHUNK;
+                let end = start + rm.len();
+                kernel(&a_mids[start..end], &a_rads[start..end], rm, rr);
+            });
+    } else {
+        kernel(a_mids, a_rads, r_mids, r_rads);
     }
 
     result
@@ -226,26 +243,46 @@ pub fn mul_scalar(a: &IntervalArray, s: Interval) -> IntervalArray {
 
     let s_mid = s.midpoint();
     let s_rad = s.radius();
+    let abs_s_mid = s_mid.abs();
     let n = a.len();
 
-    for i in 0..n {
-        let t = a_mids[i] * s_mid;
-        let err = if t.is_finite() {
-            a_mids[i].mul_add(s_mid, -t).abs()
-        } else {
-            f64::INFINITY
-        };
-        r_mids[i] = t;
-        r_rads[i] = crate::error::interval::add_ru_chain(
-            crate::error::interval::add_ru_chain(
-                crate::error::interval::mul_ru(a_mids[i].abs(), s_rad),
-                crate::error::interval::mul_ru(a_rads[i], s_mid.abs()),
-            ),
-            crate::error::interval::add_ru_chain(
-                crate::error::interval::mul_ru(a_rads[i], s_rad),
-                err,
-            ),
-        );
+    let kernel = |a_m: &[f64], a_r: &[f64], r_m: &mut [f64], r_r: &mut [f64]| {
+        for i in 0..a_m.len() {
+            let am = a_m[i];
+            let ar = a_r[i];
+            let t = am * s_mid;
+            let err = if t.is_finite() {
+                am.mul_add(s_mid, -t).abs()
+            } else {
+                f64::INFINITY
+            };
+            r_m[i] = t;
+            r_r[i] = crate::error::interval::add_ru_chain(
+                crate::error::interval::add_ru_chain(
+                    crate::error::interval::mul_ru(am.abs(), s_rad),
+                    crate::error::interval::mul_ru(ar, abs_s_mid),
+                ),
+                crate::error::interval::add_ru_chain(
+                    crate::error::interval::mul_ru(ar, s_rad),
+                    err,
+                ),
+            );
+        }
+    };
+
+    if n >= vec_ops::PAR_THRESHOLD {
+        const CHUNK: usize = 8192;
+        r_mids
+            .par_chunks_mut(CHUNK)
+            .zip(r_rads.par_chunks_mut(CHUNK))
+            .enumerate()
+            .for_each(|(chunk_idx, (rm, rr))| {
+                let start = chunk_idx * CHUNK;
+                let end = start + rm.len();
+                kernel(&a_mids[start..end], &a_rads[start..end], rm, rr);
+            });
+    } else {
+        kernel(a_mids, a_rads, r_mids, r_rads);
     }
 
     result
@@ -277,5 +314,34 @@ mod tests {
         let c = mul_arrays(&a, &b);
         assert!((c.get(0).midpoint() - 8.0).abs() < 1e-10);
         assert!((c.get(1).midpoint() - 15.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_sub_intervals_rigorous_residual() {
+        let a = IntervalArray::from_f64_slice(&[1.0 + 2f64.powi(-52)]);
+        let b = IntervalArray::from_f64_slice(&[1.0]);
+        let c = sub_arrays(&a, &b);
+        assert_eq!(c.get(0).midpoint(), 2f64.powi(-52));
+        assert_eq!(c.get(0).radius(), 0.0);
+    }
+
+    #[test]
+    fn test_scalar_ops_parallel() {
+        let n = vec_ops::PAR_THRESHOLD + 100;
+        let data = vec![2.0; n];
+        let a = IntervalArray::from_f64_slice(&data);
+        let s = Interval::from_midpoint_radius(3.0, 0.5);
+
+        let added = add_scalar(&a, s);
+        assert_eq!(added.len(), n);
+        assert_eq!(added.get(0).midpoint(), 5.0);
+        assert_eq!(added.get(n - 1).midpoint(), 5.0);
+        assert!(added.get(0).radius() >= 0.5);
+
+        let multiplied = mul_scalar(&a, s);
+        assert_eq!(multiplied.len(), n);
+        assert_eq!(multiplied.get(0).midpoint(), 6.0);
+        assert_eq!(multiplied.get(n - 1).midpoint(), 6.0);
+        assert!(multiplied.get(0).radius() > 0.0);
     }
 }
